@@ -1,4 +1,5 @@
 # IDA-patch-pro
+目前只测试了9.2pro版本
 
 `IDA-patch-pro` 是一个给 IDA Pro 使用的汇编补丁插件。它会在反汇编窗口的右键菜单里增加 `修改汇编` 和 `NOP` 两个功能，并提供更适合实际补丁工作的增强界面。
 
@@ -34,31 +35,22 @@
 
 ![Right Click Menu](docs/images/context-menu.png)
 
-建议文件名：`context-menu.png`
 
 ### 2. Assemble 主界面
 
 ![Assemble Dialog](docs/images/assemble-dialog.png)
 
-建议文件名：`assemble-dialog.png`
 
 ### 3. 语法帮助窗口
 
 ![Syntax Help](docs/images/syntax-help.png)
 
-建议文件名：`syntax-help.png`
 
-### 4. 多行预览/模板建议
-
-![Multi-line Preview](docs/images/multi-line-preview.png)
-
-建议文件名：`multi-line-preview.png`
-
-### 5. 寄存器速查表
+### 4. 寄存器速查表
 
 ![Register Help](docs/images/register-help.png)
 
-建议文件名：`register-help.png`
+
 
 ## 文件说明
 
@@ -67,7 +59,6 @@
 
 ## 安装方法
 
-### 方式一：直接复制插件文件
 
 1. 把 [asm_patch_popup.py](./asm_patch_popup.py) 复制到 IDA 的 `plugins` 目录。
 2. 重启 IDA。
@@ -79,12 +70,6 @@
 D:\TOOL\ida_9.2\plugins\asm_patch_popup.py
 ```
 
-### 方式二：从仓库开发调试
-
-1. 克隆本仓库。
-2. 修改 [asm_patch_popup.py](./asm_patch_popup.py)。
-3. 将修改后的文件同步到 IDA 的 `plugins` 目录。
-4. 重启 IDA 或重新加载插件。
 
 ## 使用方法
 
@@ -179,17 +164,4 @@ mov dword ptr [rsp+198h+var_158], 1
 - 某些向量指令不能直接写立即数，右侧模板建议会给出替代写法
 - 如果你修改的是选中范围，写入长度不能超过该选区
 
-## 开发说明
 
-这个仓库当前保持单文件插件结构，方便直接放进 IDA 的 `plugins` 目录调试。
-
-如果后续功能继续扩展，建议再拆分成：
-
-- `asm_patch_popup.py`
-- `syntax_tables.py`
-- `hints.py`
-- `fallback_assemblers.py`
-
-## 许可证
-
-目前仓库未附带单独许可证文件；如果准备公开分发，建议补一个 `LICENSE`。
