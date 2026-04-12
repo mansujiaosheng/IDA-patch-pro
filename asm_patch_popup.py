@@ -54,12 +54,29 @@ MNEMONIC_HINTS = {
     "neg": "取相反数，等价于 0 减去该操作数。",
     "movzx": "零扩展传送。把较小操作数无符号扩展后写入目标。",
     "movsx": "符号扩展传送。把较小操作数按有符号值扩展后写入目标。",
+    "setz": "条件置位指令。若条件满足则把目标字节写成 1，否则写成 0。`setz` 对应 ZF=1。",
     "movaps": "对齐的 128 位向量搬运。源/目标通常是 XMM 寄存器或对齐的 16 字节内存。",
     "movups": "非对齐的 128 位向量搬运。源/目标通常是 XMM 寄存器或内存。",
     "movdqa": "对齐的整数向量搬运。常用于 XMM 寄存器和 16 字节内存之间。",
     "movdqu": "非对齐的整数向量搬运。",
     "pxor": "SIMD 按位异或。`pxor xmm0, xmm0` 常用于清零 XMM 寄存器。",
     "xorps": "浮点/SIMD 按位异或。`xorps xmm0, xmm0` 也常用于清零 XMM 寄存器。",
+    "stosb": "把 `AL` 写到 `RDI/EDI` 指向的位置，并按方向标志调整指针。常见于字符串/内存填充代码。",
+    "stosd": "把 `EAX` 写到目标位置，并按元素大小推进指针。常见于批量初始化。",
+    "stosq": "把 `RAX` 写到目标位置，并按 8 字节推进指针。常见于 64 位内存填充。",
+    "rep stosb": "重复执行 `stosb`，次数通常由 `RCX/ECX` 控制。常见于 `memset` 风格填充。",
+    "rep stosd": "重复执行 `stosd`，常见于按双字批量填充内存。",
+    "rep stosq": "重复执行 `stosq`，常见于 64 位环境下的大块内存清零或填充。",
+    "movsb": "把 `[RSI/ESI]` 的字节拷贝到 `[RDI/EDI]`，并自动推进源/目标指针。",
+    "movsq": "按 8 字节搬运字符串元素，常见于批量拷贝。",
+    "rep movsb": "重复执行 `movsb`，次数通常由 `RCX/ECX` 控制。常见于 `memcpy/memmove` 风格代码。",
+    "rep movsq": "重复执行 `movsq`，常见于 64 位批量内存复制。",
+    "scasb": "把 `AL` 与目标内存比较，并推进扫描指针。常见于字符串搜索。",
+    "repne scasb": "反复扫描字节直到匹配或计数耗尽。常见于字符串长度/搜索逻辑。",
+    "lodsb": "把源地址的字节装入 `AL` 并推进源指针。常见于字符串遍历。",
+    "int3": "软件断点指令。常用于调试、补丁占位或故意中断执行。",
+    "ud2": "无条件非法指令。执行时会触发异常，常用于不可达路径、崩溃保护或反调试场景。",
+    "cmovnb": "条件移动指令。仅当条件满足时才移动源操作数到目标。`cmovnb` 对应 CF=0。",
     "xchg": "交换两个操作数。",
     "leave": "销毁当前栈帧，常见于函数尾部。",
     "imul": "有符号乘法。",
@@ -286,8 +303,21 @@ ARCH_SYNTAX_HELP = {
             ("cmp eax, ebx", "cmp left, right", "39 D8", "2-6 bytes", "比较两个操作数，只更新标志位"),
             ("test eax, eax", "test left, right", "85 C0", "2 bytes", "按位与测试，不保存结果"),
             ("movzx eax, byte ptr [rbx]", "movzx dst, src", "0F B6 03", "3+ bytes", "无符号扩展读取"),
+            ("movzx edx, byte ptr [rdi]", "movzx dst, src", "0F B6 17", "3 bytes", "把 8 位无符号值扩展到 32 位"),
             ("movsx eax, byte ptr [rbx]", "movsx dst, src", "0F BE 03", "3+ bytes", "有符号扩展读取"),
+            ("setz dl", "setcc r/m8", "0F 94 C2", "3 bytes", "条件满足时把目标字节置为 1，否则置为 0"),
+            ("cmovnb rbp, r13", "cmovcc dst, src", "49 0F 43 ED", "4 bytes", "仅当条件满足时才移动，`cmovnb` 对应 CF=0"),
             ("xchg eax, ebx", "xchg left, right", "93", "1 byte", "交换两个寄存器"),
+            ("stosb", "stosb", "AA", "1 byte", "把 AL 写到 [RDI/EDI] 并推进指针"),
+            ("stosq", "stosq", "48 AB", "2 bytes", "把 RAX 写到 [RDI] 并推进 8 字节"),
+            ("rep stosq", "rep stosq", "F3 48 AB", "3 bytes", "重复执行 stosq，常见于 memset/清零"),
+            ("movsb", "movsb", "A4", "1 byte", "从 [RSI] 复制 1 字节到 [RDI]"),
+            ("rep movsb", "rep movsb", "F3 A4", "2 bytes", "重复执行 movsb，常见于 memcpy/memmove"),
+            ("scasb", "scasb", "AE", "1 byte", "用 AL 扫描目标字节"),
+            ("repne scasb", "repne scasb", "F2 AE", "2 bytes", "重复扫描直到命中或计数耗尽"),
+            ("lodsb", "lodsb", "AC", "1 byte", "把 [RSI] 的字节装入 AL"),
+            ("int3", "int3", "CC", "1 byte", "软件断点"),
+            ("ud2", "ud2", "0F 0B", "2 bytes", "显式触发非法指令异常"),
             ("call 401000h", "call target", "E8 xx xx xx xx", "5 bytes", "调用函数或子过程"),
             ("jmp short loc_401020", "jmp target", "EB xx / E9 xx xx xx xx", "2 or 5 bytes", "无条件跳转"),
             ("jz short loc_401030", "jcc target", "74 xx / 0F 84 xx xx xx xx", "2 or 6 bytes", "条件跳转，依赖标志位"),
@@ -347,6 +377,86 @@ ARCH_SYNTAX_HELP = {
             ("jal sub_3000", "jal target", "xx xx xx 0C", "4 bytes", "函数调用"),
             ("jr $ra", "jr rs", "08 00 E0 03", "4 bytes", "跳转寄存器，常用于返回"),
             ("nop", "nop", "00 00 00 00", "4 bytes", "空操作"),
+        ],
+    },
+}
+
+
+# 按架构整理的寄存器速查表：用于单独的寄存器帮助窗口。
+ARCH_REGISTER_HELP = {
+    "x86/x64": {
+        "note": "x86/x64 这里按常见逆向和补丁场景整理。参数/返回值说明默认更偏 Windows x64 习惯用法。",
+        "rows": [
+            ("rax / eax / ax / al", "累加器", "返回值、算术、临时值", "写 `eax` 会自动清零 `rax` 高 32 位"),
+            ("rbx / ebx / bx / bl", "保存寄存器", "通用保存、对象上下文", "常见被调用者保存寄存器"),
+            ("rcx / ecx / cx / cl", "参数/计数器", "第 1 整数参数、循环计数", "`cl` 常作移位次数"),
+            ("rdx / edx / dx / dl", "参数", "第 2 整数参数、乘除法辅助", "除法场景常与 `rax` 联动"),
+            ("r8 / r8d / r8w / r8b", "参数", "第 3 整数参数", "Windows x64 常见"),
+            ("r9 / r9d / r9w / r9b", "参数", "第 4 整数参数", "Windows x64 常见"),
+            ("r10 / r10d / r10w / r10b", "临时寄存器", "中转、跳板、syscall 相关", "通常由调用者保存"),
+            ("r11 / r11d / r11w / r11b", "临时寄存器", "短期临时值", "常被自由破坏"),
+            ("r12-r15", "保存寄存器", "长期保存数据、对象指针", "通常偏向被调用者保存"),
+            ("rsi / esi / si / sil", "源寄存器", "字符串操作、地址中转", "不同 ABI 下也可能作参数寄存器"),
+            ("rdi / edi / di / dil", "目标寄存器", "字符串操作、缓冲区指针、临时值", "逆向里常见目的地址/对象地址"),
+            ("rbp / ebp / bp / bpl", "帧指针", "访问局部变量、维持栈框架", "开启优化后也可能退化成普通寄存器"),
+            ("rsp / esp / sp / spl", "栈指针", "调用、返回、局部变量分配", "修改前必须确认栈平衡"),
+            ("rip / eip / ip", "指令指针", "当前执行位置", "通常通过跳转/调用间接改变"),
+            ("rflags / eflags", "标志寄存器", "ZF/CF/SF/OF 等条件状态", "`cmp/test/add/sub` 等会更新它"),
+            ("xmm0-xmm3", "SIMD/参数/返回值", "浮点返回值、向量计算、前几个 SIMD 参数", "`xmm0` 常见于返回值"),
+            ("xmm4-xmm15", "SIMD 寄存器", "向量/浮点临时值", "逆向 SSE/AVX 代码时常见"),
+            ("ymm0-ymm15", "AVX 寄存器", "256 位向量运算", "与 `xmm` 为同一寄存器的更宽视图"),
+            ("zmm0-zmm31", "AVX-512 寄存器", "512 位向量运算", "需要目标环境支持 AVX-512"),
+            ("st(0)-st(7)", "x87 FPU 栈", "老式浮点计算", "现代编译器里已较少"),
+        ],
+    },
+    "ARM/Thumb": {
+        "note": "ARM/Thumb 这里按经典 ARM32 调用习惯整理，便于看参数、返回值和栈相关寄存器。",
+        "rows": [
+            ("r0-r3", "参数/返回值", "前 4 个参数，`r0` 常见返回值", "最常见的参数寄存器组"),
+            ("r4-r7", "保存寄存器", "长期保存局部值、对象指针", "通常由被调用者保存"),
+            ("r8-r11", "保存寄存器/帧相关", "局部状态、帧指针", "`r11` 常见作 `fp`"),
+            ("r12 / ip", "临时寄存器", "过程内临时值、中转", "常见 scratch register"),
+            ("r13 / sp", "栈指针", "函数栈顶、局部变量分配", "修改前需确认栈平衡"),
+            ("r14 / lr", "链接寄存器", "保存返回地址", "调用后通常写入返回位置"),
+            ("r15 / pc", "程序计数器", "当前执行位置", "常通过分支/返回改变"),
+            ("fp", "帧指针别名", "常对应 `r11`", "便于读函数栈框架"),
+            ("s0-s31", "VFP 标量寄存器", "浮点运算", "单精度视图"),
+            ("d0-d31", "VFP 双精度寄存器", "浮点/NEON 数据", "双精度或打包数据视图"),
+            ("q0-q15", "NEON 向量寄存器", "128 位 SIMD 运算", "逆向多媒体/加密代码时常见"),
+        ],
+    },
+    "AArch64": {
+        "note": "AArch64 这里按常见 64 位 ARM 调用习惯整理，方便快速判断参数寄存器和保存寄存器。",
+        "rows": [
+            ("x0-x7 / w0-w7", "参数/返回值", "前 8 个整数参数，`x0` 常见返回值", "写 `wN` 会清零对应 `xN` 高 32 位"),
+            ("x8 / w8", "特殊/中转", "间接返回值地址、syscall 编号等", "具体含义依平台而变"),
+            ("x9-x15", "临时寄存器", "短期中转、表达式计算", "通常由调用者保存"),
+            ("x16-x18", "平台/临时寄存器", "PLT、跳板、平台保留用途", "逆向时需结合平台 ABI 判断"),
+            ("x19-x28", "保存寄存器", "长期保存局部状态、对象上下文", "通常由被调用者保存"),
+            ("x29 / fp", "帧指针", "访问栈帧、局部变量", "函数序言/尾声里高频出现"),
+            ("x30 / lr", "链接寄存器", "保存返回地址", "`ret` 常默认使用它"),
+            ("sp / wsp", "栈指针", "函数栈空间管理", "写 `wsp` 同样会影响栈指针"),
+            ("pc", "程序计数器", "当前执行位置", "通常通过 `b/bl/br/ret` 改变"),
+            ("v0-v7", "SIMD/浮点参数", "浮点返回值、前几个 SIMD 参数", "`v0` 常见于返回值"),
+            ("v8-v31", "SIMD/浮点寄存器", "向量和浮点临时值", "常见于 NEON 代码"),
+            ("nzcv", "标志寄存器", "条件分支依赖的标志位", "受 `cmp/subs/adds` 等更新"),
+        ],
+    },
+    "MIPS": {
+        "note": "MIPS 这里按经典寄存器分组整理，方便快速判断参数、返回值和保存约定。",
+        "rows": [
+            ("$zero", "常量寄存器", "永远读为 0", "写入会被忽略"),
+            ("$at", "汇编器临时", "伪指令展开时常用", "手改汇编时一般少直接使用"),
+            ("$v0-$v1", "返回值寄存器", "函数返回值、syscall 结果", "`$v0` 也常作 syscall 编号"),
+            ("$a0-$a3", "参数寄存器", "前 4 个参数", "逆向函数调用时最常关注"),
+            ("$t0-$t9", "临时寄存器", "短期中转和表达式计算", "通常由调用者保存"),
+            ("$s0-$s7", "保存寄存器", "长期保存局部状态", "通常由被调用者保存"),
+            ("$gp", "全局指针", "全局数据访问", "位置相关代码里常见"),
+            ("$sp", "栈指针", "函数栈顶、局部变量分配", "改动前应确认栈平衡"),
+            ("$fp / $s8", "帧指针", "访问当前栈帧", "某些编译器把 `$s8` 作为帧指针"),
+            ("$ra", "返回地址", "函数调用返回位置", "`jal` 会写入它"),
+            ("$k0-$k1", "内核保留", "异常/内核路径", "用户态一般不主动使用"),
+            ("HI / LO", "乘除法结果寄存器", "乘法高低位、除法商余数", "`mult/div` 后常配合 `mfhi/mflo`"),
         ],
     },
 }
@@ -717,10 +827,19 @@ def _extract_mnemonic(text):
     if not line:
         return ""
     line = line.split(";", 1)[0].strip()
-    parts = line.split(None, 1)
-    if not parts:
+    tokens = line.split()
+    if not tokens:
         return ""
-    return parts[0].lower()
+    first = tokens[0].lower()
+    if first in ("rep", "repe", "repz", "repne", "repnz", "lock") and len(tokens) >= 2:
+        second = tokens[1].lower()
+        combined = "%s %s" % (first, second)
+        if combined in MNEMONIC_HINTS:
+            return combined
+        if second in MNEMONIC_HINTS:
+            return second
+        return combined
+    return first
 
 
 def _extract_registers(text, arch_key):
@@ -920,6 +1039,19 @@ def _fallback_assembly_candidates(line, arch_key, original_entry=None):
                         % size_kw,
                     )
                 )
+
+    if arch_key == "x86/x64" and mnem in ("movaps", "movups", "movdqa", "movdqu") and len(operands) >= 2:
+        dst, src = operands[0], operands[1]
+        scalar_size = _infer_operand_size_keyword(dst)
+        if "[" in dst and "]" in dst and scalar_size in ("byte", "word", "dword", "qword") and _is_immediate_literal(src):
+            dst_clean = _strip_size_prefix(dst)
+            candidates.append(
+                (
+                    "mov %s ptr %s, %s" % (scalar_size, dst_clean, src),
+                    "兼容模板: `%s` 不能直接把立即数写入内存，已按标量 `mov %s ptr` 重写。"
+                    % (mnem, scalar_size),
+                )
+            )
     return candidates
 
 
@@ -1502,57 +1634,111 @@ def _load_qt():
     return QtCore, QtGui, QtWidgets
 
 
-class SyntaxHelpDialog:
-    """Architecture-specific syntax quick reference dialog."""
+class ReferenceTableDialog:
+    """Shared searchable table dialog used by syntax and register references."""
 
-    def __init__(self, category, parent=None):
-        """Build the quick reference table for the selected architecture."""
+    def __init__(self, title, note_text, headers, rows, monospace_columns=None, parent=None):
+        """Build a generic filterable reference table."""
         QtCore, QtGui, QtWidgets = _load_qt()
-        info = ARCH_SYNTAX_HELP[category]
+        monospace_columns = set(monospace_columns or [])
 
         self.dialog = QtWidgets.QDialog(parent)
-        self.dialog.setWindowTitle("汇编语法帮助 - %s" % category)
-        self.dialog.resize(980, 420)
+        self.dialog.setWindowTitle(title)
+        self.dialog.resize(1080, 520)
+        self._rows = list(rows)
+        self._QtWidgets = QtWidgets
+        self._QtGui = QtGui
 
         layout = QtWidgets.QVBoxLayout(self.dialog)
 
-        note = QtWidgets.QLabel(info["note"], self.dialog)
+        note = QtWidgets.QLabel(note_text, self.dialog)
         note.setWordWrap(True)
         layout.addWidget(note)
 
-        table = QtWidgets.QTableWidget(self.dialog)
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["示例", "语法", "典型十六进制", "典型字节长度", "含义"])
-        table.setRowCount(len(info["rows"]))
-        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
+        self.search_edit = QtWidgets.QLineEdit(self.dialog)
+        self.search_edit.setPlaceholderText("输入关键字过滤，例如 mov / rsp / xmm0 / return / 参数")
+        self.search_edit.textChanged.connect(self._apply_filter)
+        layout.addWidget(self.search_edit)
 
-        for row_index, row in enumerate(info["rows"]):
+        self.table = QtWidgets.QTableWidget(self.dialog)
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(self._rows))
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+
+        monospace_font = QtGui.QFont("Consolas")
+        for row_index, row in enumerate(self._rows):
             for col_index, value in enumerate(row):
                 item = QtWidgets.QTableWidgetItem(value)
-                if col_index == 0:
-                    item.setFont(QtGui.QFont("Consolas"))
-                table.setItem(row_index, col_index, item)
+                if col_index in monospace_columns:
+                    item.setFont(monospace_font)
+                self.table.setItem(row_index, col_index, item)
 
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
-        layout.addWidget(table)
+        header = self.table.horizontalHeader()
+        for col_index in range(max(0, len(headers) - 1)):
+            header.setSectionResizeMode(col_index, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(len(headers) - 1, QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(self.table)
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close, parent=self.dialog)
         buttons.rejected.connect(self.dialog.reject)
         buttons.accepted.connect(self.dialog.accept)
         layout.addWidget(buttons)
 
+    def _apply_filter(self, text):
+        """Hide rows that do not match the current search keyword."""
+        needle = (text or "").strip().lower()
+        for row_index, row in enumerate(self._rows):
+            haystack = " ".join(row).lower()
+            self.table.setRowHidden(row_index, bool(needle) and needle not in haystack)
+
+    def exec(self):
+        """Show the reference dialog modally."""
+        return self.dialog.exec()
+
+
+class SyntaxHelpDialog:
+    """Architecture-specific syntax quick reference dialog."""
+
+    def __init__(self, category, parent=None):
+        """Build the quick reference table for the selected architecture."""
+        info = ARCH_SYNTAX_HELP[category]
+        self.reference = ReferenceTableDialog(
+            "汇编语法帮助 - %s" % category,
+            info["note"],
+            ["示例", "语法", "典型十六进制", "典型字节长度", "含义"],
+            info["rows"],
+            monospace_columns=(0, 1, 2),
+            parent=parent,
+        )
+
     def exec(self):
         """Show the syntax help dialog modally."""
-        return self.dialog.exec()
+        return self.reference.exec()
+
+
+class RegisterHelpDialog:
+    """Architecture-specific register quick reference dialog."""
+
+    def __init__(self, category, parent=None):
+        """Build the register reference table for the selected architecture."""
+        info = ARCH_REGISTER_HELP[category]
+        self.reference = ReferenceTableDialog(
+            "寄存器速查表 - %s" % category,
+            info["note"],
+            ["寄存器", "类别", "常见用途", "补充说明"],
+            info["rows"],
+            monospace_columns=(0,),
+            parent=parent,
+        )
+
+    def exec(self):
+        """Show the register help dialog modally."""
+        return self.reference.exec()
 
 
 class AssemblePatchDialog:
@@ -1629,6 +1815,12 @@ class AssemblePatchDialog:
         self.syntax_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.syntax_btn.setMenu(self._build_syntax_menu())
         toolbar.addWidget(self.syntax_btn)
+
+        self.register_btn = QtWidgets.QToolButton(self.dialog)
+        self.register_btn.setText("寄存器")
+        self.register_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.register_btn.setMenu(self._build_register_menu())
+        toolbar.addWidget(self.register_btn)
         root.addLayout(toolbar)
 
         buttons = QtWidgets.QDialogButtonBox(self.dialog)
@@ -1662,6 +1854,27 @@ class AssemblePatchDialog:
     def _show_syntax_help(self, category):
         """Open the syntax help dialog for the selected architecture."""
         SyntaxHelpDialog(category, self.dialog).exec()
+
+    def _build_register_menu(self):
+        """Create the register reference dropdown menu."""
+        _, _, QtWidgets = _load_qt()
+        menu = QtWidgets.QMenu(self.dialog)
+
+        current_key = _processor_key()
+        current_action = menu.addAction("当前架构: %s" % current_key)
+        current_action.triggered.connect(
+            lambda checked=False, cat=current_key: self._show_register_help(cat)
+        )
+
+        menu.addSeparator()
+        for category in ("x86/x64", "ARM/Thumb", "AArch64", "MIPS"):
+            action = menu.addAction(category)
+            action.triggered.connect(lambda checked=False, cat=category: self._show_register_help(cat))
+        return menu
+
+    def _show_register_help(self, category):
+        """Open the register help dialog for the selected architecture."""
+        RegisterHelpDialog(category, self.dialog).exec()
 
     def _on_text_changed(self):
         """Reset preview state when editor content changes."""

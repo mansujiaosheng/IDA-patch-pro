@@ -19,6 +19,7 @@
 - 支持多行汇编编辑
 - 支持机器码预览
 - 支持语法速查窗口
+- 支持寄存器速查表
 - 支持寄存器作用提示
 - 支持常见指令模板建议
 - 支持长度超出时提示将覆盖到哪里
@@ -52,6 +53,12 @@
 ![Multi-line Preview](docs/images/multi-line-preview.png)
 
 建议文件名：`multi-line-preview.png`
+
+### 5. 寄存器速查表
+
+![Register Help](docs/images/register-help.png)
+
+建议文件名：`register-help.png`
 
 ## 文件说明
 
@@ -114,6 +121,8 @@ D:\TOOL\ida_9.2\plugins\asm_patch_popup.py
 - 模板建议
 
 顶部 `语法` 按钮可打开当前架构的常见汇编语法帮助表。
+
+顶部 `寄存器` 按钮可打开当前架构的寄存器速查表，并支持关键字过滤。
 
 ## 兼容性
 
