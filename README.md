@@ -29,8 +29,6 @@
 
 ## 截图
 
-这里预留了几个截图位置，你把图片放进 `docs/images/` 后直接替换文件即可。
-
 ### 1. 右键菜单
 
 ![Right Click Menu](docs/images/context-menu.png)
