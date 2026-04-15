@@ -80,6 +80,15 @@
 ### 6.回撤列表
 ![Revert List](docs/images/revert-list.png)
 
+### 7.汇编搜索
+![Assembly Search](docs/images/assembly-search.png)
+
+### 8.fill range
+![Fill Range](docs/images/fill-range.png)
+
+
+
+
 
 
 ## 项目结构
