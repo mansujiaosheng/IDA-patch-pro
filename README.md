@@ -66,24 +66,43 @@
 
 
 
-## 文件说明
+## 项目结构
 
-- [ida_patch_pro.py](./ida_patch_pro.py)：IDA 插件入口壳文件。IDA 通过它发现插件。
-- [ida_patch_pro_pkg](./ida_patch_pro_pkg)：插件目录。实际代码都在这个目录里。
-- [ida_patch_pro_pkg/core.py](./ida_patch_pro_pkg/core.py)：插件核心逻辑。包含汇编兼容、普通补丁、代码注入、文件写回、回撤动作、UI 交互。
+- [ida_patch_pro.py](./ida_patch_pro.py)：IDA 插件入口壳文件。IDA 通过它发现插件，再转发到包目录。
+- [ida_patch_pro_pkg](./ida_patch_pro_pkg)：插件主目录。实际逻辑已经按 `plugin / actions / ui / asm / patching / trampoline / backends` 拆开。
+- [ida_patch_pro_pkg/plugin.py](./ida_patch_pro_pkg/plugin.py)：`PLUGIN_ENTRY`、`plugin_t` 生命周期、插件加载/卸载入口。
+- [ida_patch_pro_pkg/actions.py](./ida_patch_pro_pkg/actions.py)：右键菜单、顶部菜单、action handler、动作注册。
+- [ida_patch_pro_pkg/ui](./ida_patch_pro_pkg/ui)：各个非模态窗口，分别负责普通汇编修改、代码注入、回撤列表、快捷键设置和参考表。
+- [ida_patch_pro_pkg/asm](./ida_patch_pro_pkg/asm)：汇编文本解析、兼容改写、Keystone 兜底、右侧提示和模板建议。
+- [ida_patch_pro_pkg/patching](./ida_patch_pro_pkg/patching)：选区获取、补丁写入、事务记录、历史保存、补丁回撤。
+- [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline)：代码洞分配、trampoline 规划、风险提示、函数尾块挂接。
+- [ida_patch_pro_pkg/backends](./ida_patch_pro_pkg/backends)：输入文件写回、PE `.patchf` 节管理、EA 与文件偏移映射。
+- [ida_patch_pro_pkg/runtime](./ida_patch_pro_pkg/runtime)：运行时日志、历史、设置文件路径。
+- [ida_patch_pro_pkg/core.py](./ida_patch_pro_pkg/core.py)：兼容薄壳。现在只保留对旧入口的兼容，不再承载主要逻辑。
 - [ida_patch_pro_pkg/data.py](./ida_patch_pro_pkg/data.py)：静态提示数据。包含助记符说明、寄存器说明、语法速查表、寄存器速查表。
-- `docs/images/`：README 截图目录
+- [ida_patch_pro_pkg/README.md](./ida_patch_pro_pkg/README.md)：包内模块职责说明，包含各文件关键函数和维护边界。
+- `docs/images/`：README 截图目录。
 
 ### 推荐阅读顺序
 
-如果后续要继续改功能，建议先看这几个文件：
+如果后续要继续改功能，建议按下面顺序读：
 
 1. [ida_patch_pro.py](./ida_patch_pro.py)
-   只负责把 IDA 入口转发到包目录，先确认加载方式。
-2. [ida_patch_pro_pkg/core.py](./ida_patch_pro_pkg/core.py)
-   真正的功能实现都在这里。大多数行为改动都只需要读这个文件。
-3. [ida_patch_pro_pkg/data.py](./ida_patch_pro_pkg/data.py)
-   只在你要改右侧提示、语法帮助、寄存器帮助时再读。
+   确认 IDA 实际如何发现并转发到包目录。
+2. [ida_patch_pro_pkg/plugin.py](./ida_patch_pro_pkg/plugin.py)
+   看插件生命周期，确认 `init/run/term` 和实际入口。
+3. [ida_patch_pro_pkg/actions.py](./ida_patch_pro_pkg/actions.py)
+   看动作注册、右键菜单、顶部菜单和窗口打开路径。
+4. [ida_patch_pro_pkg/ui/assemble_dialog.py](./ida_patch_pro_pkg/ui/assemble_dialog.py) / [ida_patch_pro_pkg/ui/trampoline_dialog.py](./ida_patch_pro_pkg/ui/trampoline_dialog.py)
+   看用户实际操作流程，理解普通汇编修改和代码注入两条主路径。
+5. [ida_patch_pro_pkg/asm](./ida_patch_pro_pkg/asm) + [ida_patch_pro_pkg/patching](./ida_patch_pro_pkg/patching)
+   看汇编兼容改写、补丁写入、事务记录、回撤。
+6. [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline) + [ida_patch_pro_pkg/backends](./ida_patch_pro_pkg/backends)
+   只在你要继续改 code cave、`.patch` / `.patchf`、文件写回时再深入。
+7. [ida_patch_pro_pkg/data.py](./ida_patch_pro_pkg/data.py)
+   只在你要改右侧提示、语法帮助、寄存器帮助时再看。
+
+更细的文件职责和关键函数见 [ida_patch_pro_pkg/README.md](./ida_patch_pro_pkg/README.md)。
 
 ### 运行时生成文件
 

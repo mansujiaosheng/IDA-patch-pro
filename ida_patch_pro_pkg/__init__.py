@@ -14,9 +14,9 @@ def _reload_or_import(module_name):
 
 
 _reload_or_import("data")
-_core = _reload_or_import("core")
+_plugin = _reload_or_import("plugin")
 
 
 def PLUGIN_ENTRY():
-    """Delegate to the current core module."""
-    return _core.PLUGIN_ENTRY()
+    """Delegate to the current plugin module."""
+    return _plugin.PLUGIN_ENTRY()

@@ -1,0 +1,473 @@
+# ida_patch_pro_pkg
+
+这份文档只描述包内代码结构，目标是让后续继续开发时能快速知道：
+
+- 每个文件负责什么
+- 关键函数/类在哪
+- 修改某类问题时应该优先进哪个模块
+
+## 总体分层
+
+- `plugin.py`
+  负责插件生命周期，不写业务逻辑。
+- `actions.py`
+  负责动作注册、右键菜单、顶部菜单、打开窗口。
+- `ui/`
+  负责各个窗口和用户交互。
+- `asm/`
+  负责汇编文本解析、兼容改写、汇编兜底、右侧提示。
+- `patching/`
+  负责选区、字节写入、事务、历史、回撤。
+- `trampoline/`
+  负责代码注入规划、代码洞分配、函数尾块挂接。
+- `backends/`
+  负责文件写回、PE 节操作、EA 与文件偏移映射。
+- `runtime/`
+  负责运行时路径。
+- `constants.py` / `logging_utils.py` / `data.py`
+  负责常量、日志、静态帮助数据。
+
+## 顶层文件
+
+### `__init__.py`
+
+主要职责：
+- 包入口。
+- 热重载时重新导入 `plugin.py`。
+
+关键函数：
+- `_reload_or_import()`
+- `PLUGIN_ENTRY()`
+
+### `plugin.py`
+
+主要职责：
+- 定义 IDA 插件对象。
+- 在 `init/run/term` 中串起动作注册和 UI hook。
+
+关键类 / 函数：
+- `IdaPatchProPlugin`
+- `PLUGIN_ENTRY()`
+
+适合放这里的改动：
+- 插件加载/卸载行为
+- 入口行为
+- 直接运行插件时默认打开哪个窗口
+
+### `actions.py`
+
+主要职责：
+- 注册 action。
+- 注入右键菜单和顶部菜单。
+- 把动作分发到具体对话框或补丁逻辑。
+
+关键函数：
+- `attach_main_menu_actions()`
+- `detach_main_menu_actions()`
+- `register_actions()`
+- `unregister_actions()`
+
+关键类：
+- `AssembleActionHandler`
+- `TrampolineActionHandler`
+- `NopActionHandler`
+- `RollbackActionHandler`
+- `ShortcutSettingsActionHandler`
+- `PopupHooks`
+
+适合放这里的改动：
+- 新增一个动作
+- 调整菜单入口
+- 修改右键菜单顺序
+- 修改某个动作打开的窗口
+
+### `core.py`
+
+主要职责：
+- 兼容薄壳。
+- 保留旧入口导向 `plugin.py`。
+
+说明：
+- 不要再把新逻辑塞回这个文件。
+
+### `constants.py`
+
+主要职责：
+- 放动作 ID、菜单名、段名、默认文件名、默认快捷键等固定常量。
+
+适合放这里的改动：
+- 改 action id
+- 改 `.patch` / `.patchf` 命名
+- 改默认快捷键
+
+### `logging_utils.py`
+
+主要职责：
+- 统一写测试日志。
+- 统一异常日志格式。
+- 生成 `trace_id`。
+
+关键函数：
+- `debug_log()`
+- `debug_log_exception()`
+- `make_trace_id()`
+- `format_bytes_hex()`
+
+### `ida_adapter.py`
+
+主要职责：
+- 对常用 IDA API 做兼容封装。
+- 集中处理 imagebase、位数、segment 查询、文件路径等版本差异。
+
+关键函数：
+- `input_file_path()`
+- `find_segment_by_name()`
+- `read_idb_bytes()`
+- `current_imagebase()`
+- `is_64bit_database()`
+- `segment_bitness_code()`
+- `rebase_history_ea()`
+
+适合放这里的改动：
+- 兼容 IDA 版本差异
+- 兼容某个 API 在 9.2 下的变化
+
+### `data.py`
+
+主要职责：
+- 静态帮助数据。
+- 助记符解释、寄存器说明、语法表、寄存器表。
+
+关键函数：
+- `_register_hint()`
+
+## `ui/`
+
+### `ui/common.py`
+
+主要职责：
+- 统一加载 PySide6。
+- 统一管理非模态窗口生命周期。
+
+关键函数：
+- `load_qt()`
+- `show_modeless_dialog()`
+
+### `ui/assemble_dialog.py`
+
+主要职责：
+- 普通“修改汇编”窗口。
+- 管理编辑、预览、应用、长度检查、右侧提示区。
+
+关键类：
+- `AssemblePatchDialog`
+
+这个文件里最重要的行为：
+- 打开时读取当前选区原始汇编
+- 预览机器码
+- 应用补丁事务
+- 需要时自动补 NOP
+
+### `ui/trampoline_dialog.py`
+
+主要职责：
+- “代码注入 / trampoline”窗口。
+- 管理代码洞主体编辑、预览、风险确认、实际应用。
+
+关键类：
+- `TrampolinePatchDialog`
+
+这个文件里最重要的行为：
+- 默认载入当前选中的原始汇编
+- 支持 `include_original`
+- 支持仅 IDB 和写回输入文件两种模式
+- 实际落盘前重新确认代码洞位置
+
+### `ui/rollback_dialog.py`
+
+主要职责：
+- 展示补丁历史列表。
+- 允许手工选择事务回撤。
+
+关键类：
+- `RollbackHistoryDialog`
+
+### `ui/shortcut_dialog.py`
+
+主要职责：
+- 快捷键设置窗口。
+- 保存本地设置并尽量立即应用到当前会话。
+
+关键类：
+- `ShortcutSettingsDialog`
+
+### `ui/reference_dialogs.py`
+
+主要职责：
+- 语法帮助表和寄存器帮助表。
+- 通用表格过滤 UI。
+
+关键类：
+- `ReferenceTableDialog`
+- `SyntaxHelpDialog`
+- `RegisterHelpDialog`
+
+## `asm/`
+
+### `asm/assemble.py`
+
+主要职责：
+- 真正执行汇编。
+- IDA assembler 和 Keystone 两条路径。
+- 多行汇编拼接。
+
+关键函数：
+- `try_assemble_line()`
+- `try_assemble_line_keystone()`
+- `assemble_bytes()`
+- `assemble_multiline()`
+
+说明：
+- 如果某条指令“能写但汇编失败”，优先从这里下断点/加日志。
+
+### `asm/rewrite.py`
+
+主要职责：
+- 汇编前兼容改写。
+- 栈变量展示名转真实可汇编操作数。
+- 内存立即数自动补 `size ptr`。
+- `call/jmp symbol`、`lea reg, symbol` 兼容改写。
+
+关键函数：
+- `rewrite_line_for_assembly()`
+- `infer_memory_size_keyword()`
+- `resolve_symbol_operand_ea()`
+- `assemble_direct_branch_bytes()`
+- `fallback_assembly_candidates()`
+
+说明：
+- “IDA 里显示能看懂，但 assembler 不接受”的问题，大多应该改这里。
+
+### `asm/operands.py`
+
+主要职责：
+- 操作数解析与归一化。
+- 助记符提取、寄存器提取、立即数解析。
+- 栈变量展示名重建。
+- `...h` 立即数字面量规范化。
+
+关键函数：
+- `split_operands()`
+- `parse_immediate_value()`
+- `normalize_hex_suffix_literals()`
+- `rebuild_stack_operand_text()`
+- `build_operand_infos()`
+- `processor_key()`
+
+### `asm/hints.py`
+
+主要职责：
+- 右侧提示区文案。
+- 指令说明、模板建议、长度提示。
+
+关键函数：
+- `mnemonic_hint_text()`
+- `build_template_suggestions()`
+- `length_warning_text()`
+- `build_hint_text()`
+
+## `patching/`
+
+### `patching/selection.py`
+
+主要职责：
+- 读取当前地址、当前选区、hook 区域。
+- 读取原始指令文本、原始字节、原始 operand info。
+
+关键函数：
+- `current_ea()`
+- `selected_items()`
+- `patch_region()`
+- `hook_region()`
+- `get_original_entries()`
+- `get_entries_for_range()`
+
+### `patching/bytes_patch.py`
+
+主要职责：
+- 实际改字节。
+- 自动重建代码。
+- 普通补丁和 NOP 写入。
+
+关键函数：
+- `build_nop_bytes()`
+- `patch_bytes_as_code()`
+- `apply_code_patch()`
+
+### `patching/transactions.py`
+
+主要职责：
+- 事务开始、记录、提交。
+- 捕获 old/new bytes。
+- 保存文件写回前后的 chunk 信息。
+
+关键函数：
+- `begin_patch_transaction()`
+- `record_transaction_operation()`
+- `commit_patch_transaction()`
+- `capture_patch_operation()`
+- `apply_operation_bytes()`
+- `resolve_operation_ea()`
+
+说明：
+- 只要一个动作能修改字节，就应该先走事务记录，再落盘。
+
+### `patching/history_store.py`
+
+主要职责：
+- 设置文件和历史文件的 JSON 读写。
+- 快捷键保存和加载。
+
+关键函数：
+- `load_plugin_settings()`
+- `save_plugin_settings()`
+- `load_action_shortcuts()`
+- `save_action_shortcuts()`
+- `load_patch_history()`
+- `save_patch_history()`
+
+### `patching/rollback.py`
+
+主要职责：
+- 正式回撤一个事务。
+- 检测 stale 状态。
+- 生成回撤列表里显示的状态和描述。
+
+关键函数：
+- `rollback_transaction()`
+- `rollback_partial_transaction()`
+- `find_stale_rolled_back_entry()`
+- `describe_history_entry()`
+- `entry_runtime_status()`
+
+## `trampoline/`
+
+### `trampoline/planner.py`
+
+主要职责：
+- 代码注入预览。
+- 生成最终 code cave 文本。
+- 风险提示。
+- 计算入口 `jmp` 和 code cave 机器码。
+
+关键函数：
+- `build_trampoline_lines()`
+- `preview_trampoline_plan()`
+- `parse_trampoline_orig_marker()`
+- `trampoline_risk_notes()`
+- `trampoline_custom_risk_notes()`
+
+说明：
+- “预览没问题但应用错位”先看 planner，再看 caves。
+
+### `trampoline/caves.py`
+
+主要职责：
+- IDB 内 `.patch` 段管理。
+- 文件内现成 code cave 搜索。
+- `.patch` 段下一个可分配地址计算。
+
+关键函数：
+- `find_file_code_cave()`
+- `find_patch_segment()`
+- `next_patch_cursor()`
+- `ensure_patch_segment()`
+
+### `trampoline/function_attach.py`
+
+主要职责：
+- 把 code cave 挂成原函数 tail chunk。
+- 回撤时清理 tail chunk / 名称。
+
+关键函数：
+- `attach_cave_to_owner_function()`
+- `cleanup_trampoline_tail()`
+
+## `backends/`
+
+### `backends/filemap.py`
+
+主要职责：
+- EA 到文件偏移的映射。
+- 补丁写回时切分连续 chunk。
+
+关键函数：
+- `ea_file_offset()`
+- `build_file_patch_chunks()`
+- `write_patch_chunks_to_input_file()`
+
+### `backends/pe_backend.py`
+
+主要职责：
+- 读写输入文件的 PE 节表。
+- 管理 `.patchf` 节的创建、扩展、映射回 IDA。
+
+关键函数：
+- `pe_patch_section_info()`
+- `create_pe_patch_section()`
+- `extend_pe_patch_section()`
+- `sync_file_patch_segment_to_idb()`
+- `prepare_file_patch_segment()`
+
+说明：
+- 只要涉及“写回输入文件时的 code cave 存放位置”，优先看这里。
+
+### `backends/base.py`
+
+主要职责：
+- 预留 backend 接口基类。
+
+当前状态：
+- 现在作用很小，主要是给后续扩展留位。
+
+## `runtime/`
+
+### `runtime/paths.py`
+
+主要职责：
+- 统一运行时文件路径。
+- 日志、历史、设置文件都从这里取路径。
+
+关键函数：
+- `runtime_file_path()`
+- `test_log_path()`
+- `history_file_path()`
+- `settings_file_path()`
+
+## 修改建议
+
+按问题类型，优先改这些位置：
+
+- 菜单、动作、快捷键入口问题：
+  `plugin.py`、`actions.py`、`ui/shortcut_dialog.py`
+- 普通汇编改写/汇编失败：
+  `asm/assemble.py`、`asm/rewrite.py`、`asm/operands.py`
+- 右侧提示区文案：
+  `asm/hints.py`、`data.py`
+- 普通补丁写入/NOP/事务：
+  `patching/bytes_patch.py`、`patching/transactions.py`
+- 回撤列表和回撤异常：
+  `patching/rollback.py`、`ui/rollback_dialog.py`
+- 代码注入预览和风险提示：
+  `trampoline/planner.py`、`ui/trampoline_dialog.py`
+- `.patch` / `.patchf` 分配和文件写回：
+  `trampoline/caves.py`、`backends/filemap.py`、`backends/pe_backend.py`
+- IDA API 兼容性问题：
+  `ida_adapter.py`
+
+## 不建议的做法
+
+- 不要再把新功能堆回 `core.py`。
+- 不要在 `ui/` 里直接写文件偏移和 PE 节逻辑。
+- 不要在 `actions.py` 里直接堆复杂业务判断，动作层只做分发。
+- 不要在 `asm/` 里直接做历史持久化；事务相关统一走 `patching/`。
