@@ -5,7 +5,12 @@ import time
 import ida_kernwin
 
 from ..constants import PLUGIN_NAME
-from ..patching.history_store import load_patch_history
+from ..patching.history_store import (
+    clear_patch_history,
+    delete_patch_history_entry,
+    delete_patch_history_entries,
+    load_patch_history,
+)
 from ..patching.rollback import (
     describe_history_entry,
     entry_can_rollback,
@@ -25,6 +30,7 @@ class RollbackHistoryDialog:
     def __init__(self, ctx):
         """Build the rollback history list dialog."""
         _QtCore, QtGui, QtWidgets = load_qt()
+        self._QtCore = _QtCore
         self._QtGui = QtGui
         self._QtWidgets = QtWidgets
         self.ctx = ctx
@@ -51,8 +57,8 @@ class RollbackHistoryDialog:
         body = QtWidgets.QHBoxLayout()
 
         self.table = QtWidgets.QTableWidget(self.dialog)
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["状态", "类型", "目标", "代码洞", "写回文件", "时间"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["", "状态", "类型", "目标", "代码洞", "写回文件", "时间"])
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
@@ -80,6 +86,18 @@ class RollbackHistoryDialog:
         self.rollback_btn = QtWidgets.QPushButton("回撤所选", self.dialog)
         self.rollback_btn.clicked.connect(self._rollback_selected)
         toolbar.addWidget(self.rollback_btn)
+
+        self.delete_btn = QtWidgets.QPushButton("删除记录", self.dialog)
+        self.delete_btn.clicked.connect(self._delete_selected_entry)
+        toolbar.addWidget(self.delete_btn)
+
+        self.delete_checked_btn = QtWidgets.QPushButton("删除勾选", self.dialog)
+        self.delete_checked_btn.clicked.connect(self._delete_checked_entries)
+        toolbar.addWidget(self.delete_checked_btn)
+
+        self.clear_btn = QtWidgets.QPushButton("清空列表", self.dialog)
+        self.clear_btn.clicked.connect(self._clear_history_entries)
+        toolbar.addWidget(self.clear_btn)
 
         self.close_btn = QtWidgets.QPushButton("关闭", self.dialog)
         self.close_btn.clicked.connect(self.dialog.close)
@@ -117,6 +135,15 @@ class RollbackHistoryDialog:
             return None
         return self._rows[row]
 
+    def _checked_rows(self):
+        """Return all checked history rows."""
+        checked = []
+        for index in range(len(self._rows)):
+            item = self.table.item(index, 0)
+            if item is not None and item.checkState() == self._QtCore.Qt.Checked:
+                checked.append(self._rows[index])
+        return checked
+
     def _select_preferred_row(self):
         """Pick a sensible default selection after reloading the list."""
         if not self._rows:
@@ -142,6 +169,13 @@ class RollbackHistoryDialog:
         for row_index, row in enumerate(self._rows):
             entry = row["entry"]
             created_at = entry.get("created_at")
+            checked_item = QtWidgets.QTableWidgetItem("")
+            checked_item.setFlags(
+                QtWidgets.QTableWidgetItem().flags()
+                | self._QtCore.Qt.ItemIsUserCheckable
+            )
+            checked_item.setCheckState(self._QtCore.Qt.Unchecked)
+            self.table.setItem(row_index, 0, checked_item)
             values = [
                 entry_runtime_status_text(row["runtime_status"]),
                 entry.get("label") or entry.get("kind") or "",
@@ -150,24 +184,29 @@ class RollbackHistoryDialog:
                 "是" if row["write_to_file"] else "否",
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at)) if created_at else "",
             ]
-            for col_index, value in enumerate(values):
+            for value_index, value in enumerate(values, start=1):
                 item = QtWidgets.QTableWidgetItem(value)
-                if col_index in (2, 3):
+                if value_index in (3, 4):
                     item.setFont(font)
-                self.table.setItem(row_index, col_index, item)
+                self.table.setItem(row_index, value_index, item)
 
         header = self.table.horizontalHeader()
-        for col_index in range(5):
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        for col_index in range(1, 6):
             header.setSectionResizeMode(col_index, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(6, QtWidgets.QHeaderView.Stretch)
 
         if self._rows:
             self.status.setText("共 %d 条补丁事务记录。" % len(self._rows))
+            self.clear_btn.setEnabled(True)
             self._select_preferred_row()
         else:
             self.status.setText("当前还没有插件补丁记录。")
             self.detail.setPlainText("")
             self.rollback_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
+            self.delete_checked_btn.setEnabled(False)
+            self.clear_btn.setEnabled(False)
 
         self._refresh_details()
 
@@ -177,6 +216,7 @@ class RollbackHistoryDialog:
         if row is None:
             self.detail.setPlainText("")
             self.rollback_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
             return
 
         lines = [
@@ -191,9 +231,13 @@ class RollbackHistoryDialog:
             lines.append("说明: 历史记录已标成回撤，但当前 IDB 里仍有残留补丁字节。")
         elif not row["can_rollback"]:
             lines.append("说明: 这条记录已经回撤完成，目前仅供查看。")
+        lines.append("管理: 删除记录只会从列表里移除，不会自动改动当前 IDB 或输入文件。")
 
         self.detail.setPlainText("\n\n".join(lines))
         self.rollback_btn.setEnabled(row["can_rollback"])
+        self.delete_btn.setEnabled(True)
+        self.delete_checked_btn.setEnabled(bool(self._rows))
+        self.clear_btn.setEnabled(bool(self._rows))
 
     def _rollback_selected(self):
         """Rollback the currently selected history transaction."""
@@ -223,6 +267,60 @@ class RollbackHistoryDialog:
                 row["target_ea"] or 0,
             )
         )
+        self._reload_entries()
+
+    def _delete_selected_entry(self):
+        """Delete the selected history record without touching patch bytes."""
+        row = self._selected_row()
+        if row is None:
+            return
+        answer = ida_kernwin.ask_yn(
+            ida_kernwin.ASKBTN_NO,
+            "即将删除这条补丁历史记录。\n\n%s\n\n"
+            "注意：这不会自动回撤当前 IDB 或输入文件里的补丁，只是把它从列表中移除。\n\n是否继续？"
+            % describe_history_entry(row["entry"]),
+        )
+        if answer != ida_kernwin.ASKBTN_YES:
+            return
+        if delete_patch_history_entry(row["entry"].get("tx_id")):
+            self.status.setText("已删除所选补丁历史记录。")
+            self._reload_entries()
+
+    def _delete_checked_entries(self):
+        """Delete all checked history records without touching patch bytes."""
+        rows = self._checked_rows()
+        if not rows:
+            self.status.setText("当前没有勾选任何补丁历史记录。")
+            return
+        preview = "\n".join("- %s" % describe_history_entry(row["entry"]) for row in rows[:4])
+        if len(rows) > 4:
+            preview += "\n- ..."
+        answer = ida_kernwin.ask_yn(
+            ida_kernwin.ASKBTN_NO,
+            "即将删除勾选的 %d 条补丁历史记录。\n\n%s\n\n"
+            "注意：这不会自动回撤当前 IDB 或输入文件里的补丁，只是把这些记录从列表中移除。\n\n是否继续？"
+            % (len(rows), preview),
+        )
+        if answer != ida_kernwin.ASKBTN_YES:
+            return
+        deleted_count = delete_patch_history_entries([row["entry"].get("tx_id") for row in rows])
+        if deleted_count > 0:
+            self.status.setText("已删除勾选补丁历史记录 %d 条。" % deleted_count)
+            self._reload_entries()
+
+    def _clear_history_entries(self):
+        """Delete all history records without touching current patch bytes."""
+        if not self._rows:
+            return
+        answer = ida_kernwin.ask_yn(
+            ida_kernwin.ASKBTN_NO,
+            "即将清空补丁回撤列表中的全部历史记录。\n\n"
+            "注意：这不会自动回撤当前 IDB 或输入文件里的补丁，只是删除列表记录。\n\n是否继续？",
+        )
+        if answer != ida_kernwin.ASKBTN_YES:
+            return
+        clear_patch_history()
+        self.status.setText("已清空全部补丁历史记录。")
         self._reload_entries()
 
     def exec(self):

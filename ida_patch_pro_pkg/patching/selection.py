@@ -84,25 +84,28 @@ def get_original_instruction_bytes(ea):
     return bytes(buf) if buf else b""
 
 
-def get_original_entries(ctx):
+def build_entry_for_ea(ea, log_events=True):
+    """Build one entry dictionary for the item that starts at `ea`."""
+    text = get_original_instruction_text(ea)
+    asm = sanitize_asm_line(text)
+    return {
+        "ea": ea,
+        "text": text,
+        "asm": asm,
+        "bytes": get_original_instruction_bytes(ea),
+        "operand_infos": build_operand_infos(ea, asm, log_events=log_events),
+    }
+
+
+def get_original_entries(ctx, log_events=True):
     """Build metadata for each selected instruction line."""
     entries = []
     for ea, _ in selected_items(ctx):
-        text = get_original_instruction_text(ea)
-        asm = sanitize_asm_line(text)
-        entries.append(
-            {
-                "ea": ea,
-                "text": text,
-                "asm": asm,
-                "bytes": get_original_instruction_bytes(ea),
-                "operand_infos": build_operand_infos(ea, asm),
-            }
-        )
+        entries.append(build_entry_for_ea(ea, log_events=log_events))
     return entries
 
 
-def get_entries_for_range(start_ea, size):
+def get_entries_for_range(start_ea, size, log_events=True):
     """Build instruction entries for a contiguous range."""
     end_ea = start_ea + size
     entries = []
@@ -111,18 +114,23 @@ def get_entries_for_range(start_ea, size):
         item_size = ida_bytes.get_item_size(current)
         if item_size <= 0:
             item_size = 1
-        text = get_original_instruction_text(current)
-        asm = sanitize_asm_line(text)
-        entries.append(
-            {
-                "ea": current,
-                "text": text,
-                "asm": asm,
-                "bytes": get_original_instruction_bytes(current),
-                "operand_infos": build_operand_infos(current, asm),
-            }
-        )
+        entries.append(build_entry_for_ea(current, log_events=log_events))
         current += item_size
+    return entries
+
+
+def get_entries_for_line_count(start_ea, count, log_events=True):
+    """Build up to `count` contiguous item entries starting from `start_ea`."""
+    entries = []
+    current = start_ea
+    remaining = max(0, int(count))
+    while remaining > 0:
+        item_size = ida_bytes.get_item_size(current)
+        if item_size <= 0:
+            item_size = 1
+        entries.append(build_entry_for_ea(current, log_events=log_events))
+        current += item_size
+        remaining -= 1
     return entries
 
 

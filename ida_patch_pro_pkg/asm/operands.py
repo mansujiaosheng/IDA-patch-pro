@@ -411,7 +411,7 @@ def processor_key():
     return "x86/x64"
 
 
-def build_operand_infos(ea, asm):
+def build_operand_infos(ea, asm, log_events=True):
     """Collect per-operand display text, rewritten forms, and inferred size hints."""
     arch_key = processor_key()
     flags = ida_bytes.get_flags(ea)
@@ -439,7 +439,7 @@ def build_operand_infos(ea, asm):
                 "size_keyword": size_keyword,
             }
         )
-        if asm_operand != operand or size_keyword:
+        if log_events and (asm_operand != operand or size_keyword):
             debug_log(
                 "operand_info",
                 ea="0x%X" % ea,

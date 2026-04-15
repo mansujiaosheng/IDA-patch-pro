@@ -5,6 +5,7 @@ import os
 import sys
 
 import ida_bytes
+import ida_funcs
 import ida_idaapi
 import ida_loader
 import ida_nalt
@@ -21,6 +22,39 @@ def input_file_path():
         return getter() or ""
     except Exception:
         return ""
+
+
+def current_idb_path():
+    """Return the current IDB path when IDA exposes it."""
+    getter = getattr(idc, "get_idb_path", None)
+    if getter is None:
+        return ""
+    try:
+        return getter() or ""
+    except Exception:
+        return ""
+
+
+def current_database_identity():
+    """Return a stable-ish identity string for the currently opened database."""
+    idb_path = current_idb_path()
+    if idb_path:
+        return "idb:%s" % os.path.normcase(os.path.abspath(idb_path))
+    input_path = input_file_path()
+    if input_path:
+        return "input:%s" % os.path.normcase(os.path.abspath(input_path))
+    return "imagebase:0x%X" % current_imagebase()
+
+
+def current_database_label():
+    """Return a short user-facing label for the current database."""
+    idb_path = current_idb_path()
+    if idb_path:
+        return os.path.basename(idb_path)
+    input_path = input_file_path()
+    if input_path:
+        return os.path.basename(input_path)
+    return "imagebase_0x%X" % current_imagebase()
 
 
 def load_pefile_module():
@@ -154,6 +188,23 @@ def database_min_ea():
     return current_imagebase()
 
 
+def database_max_ea():
+    """Return the database max EA with broad IDA-version compatibility."""
+    getter = getattr(idc, "get_inf_attr", None)
+    if getter is not None:
+        try:
+            value = int(getter(idc.INF_MAX_EA))
+            if value:
+                return value
+        except Exception:
+            pass
+
+    max_ea = database_min_ea()
+    for seg in iter_segments():
+        max_ea = max(max_ea, int(seg.end_ea))
+    return max_ea
+
+
 def is_64bit_database():
     """Return whether the current database is 64-bit."""
     try:
@@ -196,3 +247,64 @@ def rebase_history_ea(ea, stored_imagebase):
     if not stored_imagebase or not imagebase or stored_imagebase == imagebase:
         return ea
     return int(ea) - stored_imagebase + imagebase
+
+
+def segment_is_executable(seg):
+    """Return whether the given segment is executable."""
+    if seg is None:
+        return False
+    perm = getattr(seg, "perm", 0)
+    return bool(perm & getattr(ida_segment, "SEGPERM_EXEC", 0))
+
+
+def segment_range_for_ea(ea):
+    """Return the segment bounds and name that contain the given EA."""
+    seg = ida_segment.getseg(ea)
+    if seg is None:
+        return None
+    return {
+        "start_ea": int(seg.start_ea),
+        "end_ea": int(seg.end_ea),
+        "name": segment_name(seg),
+        "is_executable": segment_is_executable(seg),
+    }
+
+
+def function_range_for_ea(ea):
+    """Return the function bounds and name that contain the given EA."""
+    func = ida_funcs.get_func(ea)
+    if func is None:
+        return None
+    try:
+        name = idc.get_func_name(func.start_ea) or ""
+    except Exception:
+        name = ""
+    return {
+        "start_ea": int(func.start_ea),
+        "end_ea": int(func.end_ea),
+        "name": name,
+    }
+
+
+def resolve_ea_text(text):
+    """Resolve a user-supplied EA string from a symbol name or numeric literal."""
+    value = (text or "").strip()
+    if not value:
+        return None
+
+    try:
+        ea = idc.get_name_ea_simple(value)
+    except Exception:
+        ea = ida_idaapi.BADADDR
+    if ea != ida_idaapi.BADADDR:
+        return int(ea)
+
+    try:
+        from .asm.operands import parse_immediate_value
+
+        parsed = parse_immediate_value(value)
+    except Exception:
+        parsed = None
+    if parsed is not None:
+        return int(parsed)
+    return None

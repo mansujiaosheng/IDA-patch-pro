@@ -18,7 +18,7 @@ from ..constants import (
     TRAMPOLINE_ORIG_MARKER_RE,
 )
 from ..logging_utils import debug_log
-from .caves import ensure_patch_segment, next_patch_cursor
+from .caves import preview_patch_segment_allocation, next_patch_cursor
 
 
 def trampoline_risk_notes(entries):
@@ -261,12 +261,13 @@ def preview_trampoline_plan(start_ea, region_size, custom_text, original_entries
         segment_name = file_plan["section_name"]
         alloc_base_ea = file_plan["ea_start"]
     else:
-        seg = ensure_patch_segment(0x200)
-        cave_start = next_patch_cursor(seg)
+        idb_plan = preview_patch_segment_allocation(len(cave_text) + PATCH_STUB_ALIGN)
+        seg = idb_plan["segment"]
+        cave_start = idb_plan["cave_start"]
         cave_bytes, _, cave_infos = assemble_multiline(cave_start, cave_text, arch_key, cave_entries)
         storage_mode = "idb"
-        segment_name = PATCH_SEGMENT_NAME
-        alloc_base_ea = cave_start
+        segment_name = idb_plan["segment_name"]
+        alloc_base_ea = idb_plan["alloc_base_ea"]
 
     entry_bytes, _ = assemble_bytes(start_ea, "jmp 0x%X" % cave_start, arch_key)
     if len(entry_bytes) > region_size:

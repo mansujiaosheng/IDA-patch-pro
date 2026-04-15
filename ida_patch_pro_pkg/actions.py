@@ -4,8 +4,10 @@ import ida_kernwin
 
 from .constants import (
     ACTION_ASSEMBLE,
+    ACTION_FILL_RANGE,
     ACTION_NOP,
     ACTION_ROLLBACK,
+    ACTION_SEARCH,
     ACTION_SHORTCUTS,
     ACTION_SHORTCUT_SPECS,
     ACTION_TRAMPOLINE,
@@ -14,6 +16,7 @@ from .constants import (
     MAIN_MENU_PARENT_PATH,
     MAIN_MENU_PATH,
     PLUGIN_NAME,
+    POPUP_MENU_PATH,
 )
 from .logging_utils import debug_log_exception
 from .patching.bytes_patch import apply_code_patch, build_nop_bytes
@@ -26,7 +29,9 @@ from .patching.transactions import (
     record_transaction_operation,
 )
 from .ui.assemble_dialog import AssemblePatchDialog
+from .ui.fill_range_dialog import FillRangeDialog
 from .ui.rollback_dialog import RollbackHistoryDialog
+from .ui.search_dialog import AssemblySearchDialog
 from .ui.shortcut_dialog import ShortcutSettingsDialog
 from .ui.trampoline_dialog import TrampolinePatchDialog
 
@@ -152,6 +157,44 @@ class NopActionHandler(ida_kernwin.action_handler_t):
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
+class FillRangeActionHandler(ida_kernwin.action_handler_t):
+    """Action handler for repeated assembly fill over a target range."""
+
+    def activate(self, ctx):
+        """Open the Fill Range dialog."""
+        try:
+            FillRangeDialog(ctx).exec()
+        except Exception as exc:
+            debug_log_exception("fill_range.open.failure", exc)
+            ida_kernwin.warning("打开 Fill Range 窗口失败:\n%s" % exc)
+        return 1
+
+    def update(self, ctx):
+        """Enable the action only inside the disassembly view."""
+        if ctx.widget_type == ida_kernwin.BWN_DISASM:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_DISABLE_FOR_WIDGET
+
+
+class SearchActionHandler(ida_kernwin.action_handler_t):
+    """Action handler that opens the assembly search dialog."""
+
+    def activate(self, ctx):
+        """Open the assembly search dialog."""
+        try:
+            AssemblySearchDialog(ctx).exec()
+        except Exception as exc:
+            debug_log_exception("assembly_search.open.failure", exc)
+            ida_kernwin.warning("打开汇编搜索窗口失败:\n%s" % exc)
+        return 1
+
+    def update(self, ctx):
+        """Enable the action only inside the disassembly view."""
+        if ctx.widget_type == ida_kernwin.BWN_DISASM:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_DISABLE_FOR_WIDGET
+
+
 class RollbackActionHandler(ida_kernwin.action_handler_t):
     """Action handler that opens the rollback history list."""
 
@@ -200,13 +243,15 @@ class PopupHooks(ida_kernwin.UI_Hooks):
             widget,
             popup,
             ACTION_ASSEMBLE,
-            None,
+            POPUP_MENU_PATH,
             ida_kernwin.SETMENU_APP | ida_kernwin.SETMENU_ENSURE_SEP,
         )
-        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_TRAMPOLINE)
-        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_NOP)
-        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_ROLLBACK)
-        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_SHORTCUTS)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_TRAMPOLINE, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_NOP, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_FILL_RANGE, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_SEARCH, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_ROLLBACK, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_SHORTCUTS, POPUP_MENU_PATH)
 
 
 def register_actions():
@@ -243,6 +288,24 @@ def register_actions():
             NopActionHandler(),
             shortcut_or_none(shortcuts.get(ACTION_NOP)),
             "将当前指令或选中范围填充为 NOP",
+        )
+    )
+    ida_kernwin.register_action(
+        ida_kernwin.action_desc_t(
+            ACTION_FILL_RANGE,
+            "Fill Range",
+            FillRangeActionHandler(),
+            shortcut_or_none(shortcuts.get(ACTION_FILL_RANGE)),
+            "重复汇编当前输入并填满指定范围",
+        )
+    )
+    ida_kernwin.register_action(
+        ida_kernwin.action_desc_t(
+            ACTION_SEARCH,
+            "汇编搜索",
+            SearchActionHandler(),
+            shortcut_or_none(shortcuts.get(ACTION_SEARCH)),
+            "按汇编模式搜索当前数据库中的匹配位置",
         )
     )
     ida_kernwin.register_action(

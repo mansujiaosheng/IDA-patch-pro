@@ -99,3 +99,31 @@ def save_patch_history(entries):
     """Persist patch transactions to disk."""
     with open(history_file_path(), "w", encoding="utf-8") as fh:
         json.dump(entries, fh, ensure_ascii=False, indent=2)
+
+
+def delete_patch_history_entry(tx_id):
+    """Delete one persisted patch-history entry by transaction id."""
+    entries = load_patch_history()
+    new_entries = [entry for entry in entries if entry.get("tx_id") != tx_id]
+    if len(new_entries) == len(entries):
+        return False
+    save_patch_history(new_entries)
+    return True
+
+
+def delete_patch_history_entries(tx_ids):
+    """Delete multiple persisted patch-history entries by transaction id."""
+    wanted = {str(tx_id) for tx_id in (tx_ids or []) if tx_id}
+    if not wanted:
+        return 0
+    entries = load_patch_history()
+    new_entries = [entry for entry in entries if str(entry.get("tx_id") or "") not in wanted]
+    deleted_count = len(entries) - len(new_entries)
+    if deleted_count > 0:
+        save_patch_history(new_entries)
+    return deleted_count
+
+
+def clear_patch_history():
+    """Delete all persisted patch-history entries."""
+    save_patch_history([])

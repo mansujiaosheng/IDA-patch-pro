@@ -231,8 +231,23 @@ def build_template_suggestions(current_text, current_bytes, region_size, arch_ke
     return suggestions
 
 
-def length_warning_text(patch_size, region_size, has_selection, start_ea):
+def length_warning_text(patch_size, region_size, has_selection, start_ea, effective_region_size=None):
     """Return a user-facing summary of length fit or overflow."""
+    effective_region_size = int(effective_region_size or region_size)
+    if effective_region_size > region_size and not has_selection and patch_size > region_size:
+        effective_end = start_ea + effective_region_size - 1
+        if patch_size < effective_region_size:
+            return (
+                "新汇编已超出当前指令 %d bytes；"
+                " 预览会按完整指令边界扩展到 0x%X，并在末尾自动补 %d bytes NOP。"
+                % (patch_size - region_size, effective_end, effective_region_size - patch_size)
+            )
+        return (
+            "新汇编已超出当前指令 %d bytes；"
+            " 预览会按完整指令边界扩展到 0x%X。"
+            % (patch_size - region_size, effective_end)
+        )
+
     if patch_size == region_size:
         return "长度匹配当前可覆盖范围。"
     if patch_size < region_size:
@@ -242,33 +257,63 @@ def length_warning_text(patch_size, region_size, has_selection, start_ea):
     if has_selection:
         return (
             "新汇编超出选区 %d bytes，当前不会允许写入；"
-            " 需要扩大选区到至少 0x%X。"
+            " 需要扩大选区到至少 0x%X，或改用代码注入。"
             % (patch_size - region_size, overflow_end)
         )
     return (
-        "新汇编超出当前指令 %d bytes，将继续覆盖到 0x%X。"
+        "新汇编超出当前指令 %d bytes，将继续覆盖到 0x%X；"
+        " 若不想继续覆盖，可改用代码注入。"
         % (patch_size - region_size, overflow_end)
     )
 
 
-def build_hint_text(original_entries, current_text, preview_bytes, preview_infos, region_size, has_selection, start_ea, arch_key):
+def build_hint_text(
+    original_entries,
+    current_text,
+    preview_bytes,
+    preview_infos,
+    region_size,
+    has_selection,
+    start_ea,
+    arch_key,
+    preview_plan=None,
+):
     """Assemble the full right-side help panel text."""
     current_lines = [sanitize_asm_line(line) for line in current_text.splitlines()]
     current_lines = [line for line in current_lines if line]
     preview_infos = preview_infos or []
+    effective_region_size = (
+        int(preview_plan.get("effective_region_size", region_size))
+        if preview_plan is not None
+        else region_size
+    )
 
     line_count = max(len(original_entries), len(current_lines), len(preview_infos), 1)
     lines = []
 
-    if line_count > 1:
+    if current_text.strip() or preview_bytes is not None:
         lines.append(
             "原始行数: %d | 当前编辑行数: %d"
             % (len(original_entries), len(current_lines))
         )
         if preview_bytes is not None:
-            lines.append("总长度提示: %s" % length_warning_text(len(preview_bytes), region_size, has_selection, start_ea))
+            lines.append(
+                "总长度提示: %s"
+                % length_warning_text(
+                    len(preview_bytes),
+                    region_size,
+                    has_selection,
+                    start_ea,
+                    effective_region_size=effective_region_size,
+                )
+            )
         elif current_text.strip():
             lines.append("总长度提示: 当前输入还无法成功汇编")
+        if preview_plan and preview_plan.get("expanded_to_instruction_boundary"):
+            lines.append(
+                "范围扩展: 当前指令不够，预览会自动对齐到完整指令边界，实际写入范围到 0x%X。"
+                % (preview_plan["effective_end_ea"] - 1)
+            )
 
     for index in range(line_count):
         original_entry = original_entries[index] if index < len(original_entries) else None

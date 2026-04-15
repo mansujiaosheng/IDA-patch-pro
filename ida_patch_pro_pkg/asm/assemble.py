@@ -164,9 +164,9 @@ def try_assemble_line_keystone(ea, text, arch_key):
     return None
 
 
-def assemble_bytes(ea, text, arch_key, original_entry=None):
+def assemble_bytes(ea, text, arch_key, original_entry=None, log_events=True):
     """Assemble one line after trying rewritten text and compatibility fallbacks."""
-    rewritten = rewrite_line_for_assembly(text, arch_key, original_entry)
+    rewritten = rewrite_line_for_assembly(text, arch_key, original_entry, log_events=log_events)
     prepared = normalize_hex_suffix_literals(rewritten)
     prepared_note = None
     note_parts = []
@@ -184,7 +184,9 @@ def assemble_bytes(ea, text, arch_key, original_entry=None):
         seen.add(prepared)
 
     for candidate, note in fallback_assembly_candidates(ea, prepared, arch_key, original_entry):
-        candidate = normalize_hex_suffix_literals(rewrite_line_for_assembly(candidate, arch_key, original_entry))
+        candidate = normalize_hex_suffix_literals(
+            rewrite_line_for_assembly(candidate, arch_key, original_entry, log_events=log_events)
+        )
         if candidate in seen:
             continue
         merged_note = note
@@ -206,15 +208,16 @@ def assemble_bytes(ea, text, arch_key, original_entry=None):
     for candidate, note in attempts:
         buf = try_assemble_line_keystone(ea, candidate, arch_key)
         if buf is not None:
-            debug_log(
-                "assemble_line.success",
-                assembler="keystone",
-                ea="0x%X" % ea,
-                original=text,
-                assembled=candidate,
-                note=note,
-                bytes=buf,
-            )
+            if log_events:
+                debug_log(
+                    "assemble_line.success",
+                    assembler="keystone",
+                    ea="0x%X" % ea,
+                    original=text,
+                    assembled=candidate,
+                    note=note,
+                    bytes=buf,
+                )
             if note:
                 return buf, "%s 使用 Keystone 兼容汇编。" % note
             return buf, "使用 Keystone 兼容汇编。"
@@ -222,15 +225,16 @@ def assemble_bytes(ea, text, arch_key, original_entry=None):
     for candidate, note in attempts:
         buf = try_assemble_line(ea, candidate)
         if buf is not None:
-            debug_log(
-                "assemble_line.success",
-                assembler="ida",
-                ea="0x%X" % ea,
-                original=text,
-                assembled=candidate,
-                note=note,
-                bytes=buf,
-            )
+            if log_events:
+                debug_log(
+                    "assemble_line.success",
+                    assembler="ida",
+                    ea="0x%X" % ea,
+                    original=text,
+                    assembled=candidate,
+                    note=note,
+                    bytes=buf,
+                )
             return buf, note
 
     buf, note = assemble_direct_branch_bytes(ea, prepared, arch_key)
@@ -238,27 +242,29 @@ def assemble_bytes(ea, text, arch_key, original_entry=None):
         merged_note = note
         if prepared_note:
             merged_note = "%s %s" % (prepared_note, note)
-        debug_log(
-            "assemble_line.success",
-            assembler="manual_rel32",
-            ea="0x%X" % ea,
-            original=text,
-            assembled=prepared,
-            note=merged_note,
-            bytes=buf,
-        )
+        if log_events:
+            debug_log(
+                "assemble_line.success",
+                assembler="manual_rel32",
+                ea="0x%X" % ea,
+                original=text,
+                assembled=prepared,
+                note=merged_note,
+                bytes=buf,
+            )
         return buf, merged_note
 
-    debug_log(
-        "assemble_line.failure",
-        ea="0x%X" % ea,
-        original=text,
-        attempts=" || ".join(candidate for candidate, _ in attempts),
-    )
+    if log_events:
+        debug_log(
+            "assemble_line.failure",
+            ea="0x%X" % ea,
+            original=text,
+            attempts=" || ".join(candidate for candidate, _ in attempts),
+        )
     raise RuntimeError("无法汇编: %s" % text)
 
 
-def assemble_multiline(ea, text, arch_key, original_entries=None):
+def assemble_multiline(ea, text, arch_key, original_entries=None, log_events=True):
     """Assemble multiple lines and preserve per-line preview metadata."""
     chunks = []
     notes = []
@@ -275,7 +281,13 @@ def assemble_multiline(ea, text, arch_key, original_entries=None):
             if original_entries is not None and index < len(original_entries)
             else None
         )
-        chunk, note = assemble_bytes(current_ea, line, arch_key, original_entry)
+        chunk, note = assemble_bytes(
+            current_ea,
+            line,
+            arch_key,
+            original_entry,
+            log_events=log_events,
+        )
         chunks.append(chunk)
         if note:
             notes.append(note)

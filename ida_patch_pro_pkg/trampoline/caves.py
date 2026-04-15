@@ -143,6 +143,29 @@ def next_patch_cursor(seg):
     return align_up(cursor, PATCH_STUB_ALIGN)
 
 
+def preview_patch_segment_allocation(required_size=0):
+    """Describe where the next IDB-only cave would start without mutating the database."""
+    seg = find_patch_segment()
+    if seg is None:
+        start_ea = align_up(max_segment_end() + 0x1000, 0x1000)
+        return {
+            "segment": None,
+            "segment_name": PATCH_SEGMENT_NAME,
+            "cave_start": start_ea,
+            "alloc_base_ea": start_ea,
+            "would_create": True,
+            "required_size": required_size,
+        }
+    return {
+        "segment": seg,
+        "segment_name": PATCH_SEGMENT_NAME,
+        "cave_start": next_patch_cursor(seg),
+        "alloc_base_ea": int(seg.start_ea),
+        "would_create": False,
+        "required_size": required_size,
+    }
+
+
 def ensure_patch_segment(required_size):
     """Create or extend the dedicated patch segment to fit a new trampoline stub."""
     seg = find_patch_segment()

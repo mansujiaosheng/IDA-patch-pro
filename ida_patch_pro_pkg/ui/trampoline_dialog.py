@@ -4,7 +4,7 @@ import ida_auto
 import ida_kernwin
 import idc
 
-from ..asm.operands import processor_key, sanitize_asm_line
+from ..asm.operands import processor_key
 from ..backends.pe_backend import prepare_file_patch_segment
 from ..constants import (
     PATCH_FILE_SECTION_NAME,
@@ -23,17 +23,20 @@ from ..patching.transactions import (
     record_transaction_operation,
 )
 from ..trampoline.caves import ensure_patch_segment, next_patch_cursor
+from ..trampoline.hints import build_trampoline_hint_text
 from ..trampoline.function_attach import attach_cave_to_owner_function
 from ..trampoline.planner import preview_trampoline_plan
 from .common import load_qt, show_modeless_dialog
+from .reference_dialogs import RegisterHelpDialog, SyntaxHelpDialog
 
 
 class TrampolinePatchDialog:
     """Trampoline/code-cave dialog for CE-style jump patching."""
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, initial_text=None, initial_include_original=False):
         """Initialize the trampoline dialog from the current disassembly context."""
         _QtCore, QtGui, QtWidgets = load_qt()
+        self._QtCore = _QtCore
         self.ctx = ctx
         self.arch_key = processor_key()
         if self.arch_key != "x86/x64":
@@ -50,7 +53,7 @@ class TrampolinePatchDialog:
         self.original_entries = get_entries_for_range(self.start_ea, self.region_size)
         self.original_asm_text = join_entry_asm_lines(self.original_entries)
         self.preview_plan = None
-        self.preview_text = ""
+        self.preview_signature = None
 
         self.dialog = QtWidgets.QDialog()
         self.dialog.setWindowTitle("代码注入 / Trampoline")
@@ -67,6 +70,7 @@ class TrampolinePatchDialog:
             "说明: 原地址会写入 `jmp` 跳板，再在代码洞里执行你的自定义代码。"
             " 不勾选“同时写入输入文件”时，代码洞只存在于 IDB 的 `%s` 段；"
             " 勾选后会自动创建/扩展输入文件中的 `%s` 节，适合实际运行和调试。"
+            " 高级用法可在编辑框中使用 `{{orig}}` / `{{orig:N}}`。"
             % (PATCH_SEGMENT_NAME, PATCH_FILE_SECTION_NAME),
             self.dialog,
         )
@@ -76,7 +80,7 @@ class TrampolinePatchDialog:
         body = QtWidgets.QHBoxLayout()
         self.editor = QtWidgets.QPlainTextEdit(self.dialog)
         self.editor.setPlaceholderText(
-            "例如:\n; 编辑代码洞主体。末尾回跳会自动追加。\ncall func1\nmov eax, 1234h\ncall func2"
+            "例如:\ncall my_hook\n{{orig}}\n\n或:\npush rax\nmov eax, 1234h\npop rax"
         )
         font = QtGui.QFont("Consolas")
         font.setStyleHint(QtGui.QFont.Monospace)
@@ -93,8 +97,14 @@ class TrampolinePatchDialog:
         self.status = QtWidgets.QLabel("当前未预览代码洞。", self.dialog)
         toolbar.addWidget(self.status, 1)
 
+        self.live_preview = QtWidgets.QCheckBox("实时预览", self.dialog)
+        self.live_preview.setChecked(True)
+        self.live_preview.setToolTip("勾选后会在停止输入片刻后自动刷新代码洞机器码预览。")
+        self.live_preview.stateChanged.connect(self._on_live_preview_toggled)
+        toolbar.addWidget(self.live_preview)
+
         self.include_original = QtWidgets.QCheckBox("末尾自动补齐未保留的原指令并跳回", self.dialog)
-        self.include_original.setChecked(False)
+        self.include_original.setChecked(bool(initial_include_original))
         self.include_original.stateChanged.connect(self._on_text_changed)
         toolbar.addWidget(self.include_original)
 
@@ -110,6 +120,18 @@ class TrampolinePatchDialog:
         self.preview_btn = QtWidgets.QPushButton("预览代码注入", self.dialog)
         self.preview_btn.clicked.connect(self._preview_patch)
         toolbar.addWidget(self.preview_btn)
+
+        self.syntax_btn = QtWidgets.QToolButton(self.dialog)
+        self.syntax_btn.setText("语法")
+        self.syntax_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.syntax_btn.setMenu(self._build_syntax_menu())
+        toolbar.addWidget(self.syntax_btn)
+
+        self.register_btn = QtWidgets.QToolButton(self.dialog)
+        self.register_btn.setText("寄存器")
+        self.register_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.register_btn.setMenu(self._build_register_menu())
+        toolbar.addWidget(self.register_btn)
         root.addLayout(toolbar)
 
         buttons = QtWidgets.QDialogButtonBox(self.dialog)
@@ -119,8 +141,12 @@ class TrampolinePatchDialog:
         self.cancel_btn.clicked.connect(self.dialog.reject)
         root.addWidget(buttons)
 
-        self.editor.setPlainText(self.original_asm_text)
+        self.editor.setPlainText(initial_text if initial_text is not None else self.original_asm_text)
         self.status.setText("已载入当前所选汇编。可直接在编辑框中自由修改。")
+        self.preview_timer = _QtCore.QTimer(self.dialog)
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.setInterval(320)
+        self.preview_timer.timeout.connect(self._run_live_preview)
         self.editor.textChanged.connect(self._on_text_changed)
         self._refresh_context_panel()
         debug_log(
@@ -133,9 +159,53 @@ class TrampolinePatchDialog:
             input_file=input_file_path(),
         )
 
+    def _build_syntax_menu(self):
+        """Create the quick reference dropdown menu."""
+        _QtCore, _QtGui, QtWidgets = load_qt()
+        menu = QtWidgets.QMenu(self.dialog)
+        current_action = menu.addAction("当前架构: %s" % self.arch_key)
+        current_action.triggered.connect(
+            lambda checked=False, cat=self.arch_key: self._show_syntax_help(cat)
+        )
+        menu.addSeparator()
+        for category in ("x86/x64", "ARM/Thumb", "AArch64", "MIPS"):
+            action = menu.addAction(category)
+            action.triggered.connect(lambda checked=False, cat=category: self._show_syntax_help(cat))
+        return menu
+
+    def _show_syntax_help(self, category):
+        """Open the syntax help dialog for the selected architecture."""
+        SyntaxHelpDialog(category, self.dialog).exec()
+
+    def _build_register_menu(self):
+        """Create the register reference dropdown menu."""
+        _QtCore, _QtGui, QtWidgets = load_qt()
+        menu = QtWidgets.QMenu(self.dialog)
+        current_action = menu.addAction("当前架构: %s" % self.arch_key)
+        current_action.triggered.connect(
+            lambda checked=False, cat=self.arch_key: self._show_register_help(cat)
+        )
+        menu.addSeparator()
+        for category in ("x86/x64", "ARM/Thumb", "AArch64", "MIPS"):
+            action = menu.addAction(category)
+            action.triggered.connect(lambda checked=False, cat=category: self._show_register_help(cat))
+        return menu
+
+    def _show_register_help(self, category):
+        """Open the register help dialog for the selected architecture."""
+        RegisterHelpDialog(category, self.dialog).exec()
+
     def _current_text(self):
         """Return the current editor text."""
         return self.editor.toPlainText().strip()
+
+    def _current_signature(self):
+        """Return the current preview-relevant input signature."""
+        return (
+            self._current_text(),
+            bool(self.include_original.isChecked()),
+            bool(self.write_to_file.isChecked()),
+        )
 
     def _load_original_into_editor(self):
         """Reload the currently selected original instructions into the editor."""
@@ -143,53 +213,10 @@ class TrampolinePatchDialog:
         self.editor.setPlainText(self.original_asm_text)
         self.status.setText("已重新载入当前所选汇编。可直接修改顺序和内容。")
 
-    def _build_editor_example_lines(self):
-        """Build a CE-style multiline example for the right-side hint panel."""
-        selected = []
-        for entry in self.original_entries[:2]:
-            line = sanitize_asm_line(entry.get("text") or entry.get("asm") or "")
-            if line:
-                selected.append(line)
-
-        lines = [
-            "例子:",
-            "编辑框就相当于 CE 里的 `newmem:` 主体。",
-            "末尾跳回会自动追加，不需要自己写 `jmp returnhere`。",
-            "",
-        ]
-        if len(selected) >= 2:
-            lines.extend(
-                [
-                    "当前选中:",
-                    selected[0],
-                    selected[1],
-                    "",
-                    "你可以直接改成:",
-                    "mov eax, 1",
-                    selected[0],
-                    "mov eax, 2",
-                    selected[1],
-                ]
-            )
-        elif selected:
-            lines.extend(
-                [
-                    "当前选中:",
-                    selected[0],
-                    "",
-                    "你可以直接改成:",
-                    "mov eax, 1",
-                    selected[0],
-                ]
-            )
-        else:
-            lines.extend(["你可以直接写成:", "mov eax, 1", "call my_hook"])
-        return lines
-
     def _on_text_changed(self):
         """Drop stale preview state when editor options change."""
         self.preview_plan = None
-        self.preview_text = ""
+        self.preview_signature = None
         if self._current_text() or self.include_original.isChecked():
             if self._current_text() == self.original_asm_text and not self.include_original.isChecked():
                 self.status.setText("已载入当前所选汇编。可直接在编辑框中自由修改。")
@@ -197,81 +224,42 @@ class TrampolinePatchDialog:
                 self.status.setText("编辑中。点击“预览代码注入”或直接“应用”。")
         else:
             self.status.setText("当前代码洞内容为空。")
+        self._queue_live_preview()
         self._refresh_context_panel()
 
-    def _build_hint_text(self):
-        """Build the right-side summary for the trampoline patch."""
-        lines = ["覆盖原始指令:"]
-        for index, entry in enumerate(self.original_entries, 1):
-            lines.append("%d. 0x%X: %s" % (index, entry["ea"], entry["text"] or "(unknown)"))
-
-        lines.append("")
-        lines.append("入口补丁:")
-        lines.append("- 原地址将写入 `jmp code_cave`，其余字节自动补 NOP")
-        lines.append("- 返回地址: 0x%X" % (self.start_ea + self.region_size))
-        lines.append(
-            "- 当前模式: %s"
-            % ("末尾自动补齐未保留的原指令" if self.include_original.isChecked() else "仅按编辑框中的完整顺序执行")
-        )
-        lines.append(
-            "- 存储位置: %s"
-            % ("输入文件内 `%s` 节" % PATCH_FILE_SECTION_NAME if self.write_to_file.isChecked() else "仅 IDB 内 .patch 段")
-        )
-
-        lines.append("")
-        lines.append("编辑方式:")
-        lines.append("- 编辑框默认已载入当前所选原始汇编")
-        lines.append("- 你可以直接插入、删除、重排、改写这些指令")
-        lines.append("- 结尾回跳 `jmp returnhere` 会自动追加，不需要自己写")
-
-        custom_text = self._current_text()
-        if custom_text:
-            lines.append("")
-            lines.append("当前代码洞主体:")
-            for line in custom_text.splitlines():
-                stripped = sanitize_asm_line(line)
-                if stripped:
-                    lines.append("- %s" % stripped)
+    def _on_live_preview_toggled(self):
+        """Enable or disable delayed preview updates."""
+        if self.live_preview.isChecked():
+            self._queue_live_preview()
         else:
-            lines.append("")
-            lines.append("当前代码洞主体:")
-            lines.append("- (empty)")
+            self.preview_timer.stop()
 
-        if self.preview_plan is not None and self.preview_text == custom_text:
-            lines.append("")
-            lines.append("预览结果:")
-            lines.append("- 代码洞段: %s" % (self.preview_plan.get("segment_name") or ""))
-            lines.append("- 代码洞起始: 0x%X" % self.preview_plan["cave_start"])
-            if self.preview_plan.get("storage_mode") == "file_section":
-                lines.append("- 代码洞来源: 输入文件里的专用补丁节 `%s`" % PATCH_FILE_SECTION_NAME)
-            else:
-                lines.append("- 代码洞来源: IDB 专用 .patch 段")
-            lines.append("- 入口机器码: %s" % " ".join("%02X" % b for b in self.preview_plan["entry_bytes"]))
-            lines.append("- 代码洞总长度: %d bytes" % len(self.preview_plan["cave_bytes"]))
-            if self.preview_plan["risk_notes"]:
-                lines.append("")
-                lines.append("风险提示:")
-                for note in self.preview_plan["risk_notes"]:
-                    lines.append("- %s" % note)
-        else:
-            lines.append("")
-            lines.append("预览结果:")
-            lines.append("- 当前尚未生成新的代码洞预览")
+    def _queue_live_preview(self):
+        """Schedule a delayed live preview refresh when live preview is enabled."""
+        if not self.live_preview.isChecked():
+            self.preview_timer.stop()
+            return
+        if not self._current_text() and not self.include_original.isChecked():
+            self.preview_timer.stop()
+            return
+        self.preview_timer.start()
 
-        lines.append("")
-        lines.append("注意:")
-        lines.append("- 不写入输入文件时，默认在 IDB 内新增/复用 `%s` 段" % PATCH_SEGMENT_NAME)
-        lines.append("- 写入输入文件时，默认创建/扩展 `%s` 节；不再依赖现成 code cave" % PATCH_FILE_SECTION_NAME)
-        lines.append("- 高级用法仍可选 `{{orig}}` / `{{orig:N}}`，但默认不需要")
-        lines.append("- 代码洞更接近 CE 的 `newmem` 主体：只写你想执行的完整顺序即可")
-        lines.append("- 若启用末尾自动补齐原指令，控制流/RIP 相对寻址仍需人工确认")
-        lines.append("")
-        lines.extend(self._build_editor_example_lines())
-        return "\n".join(lines)
+    def _run_live_preview(self):
+        """Trigger one delayed live preview refresh."""
+        self._preview_patch(live=True)
 
     def _refresh_context_panel(self):
         """Refresh the trampoline summary panel."""
-        self.hint_panel.setPlainText(self._build_hint_text())
+        current_preview = self.preview_plan if self.preview_signature == self._current_signature() else None
+        self.hint_panel.setPlainText(
+            build_trampoline_hint_text(
+                self.original_entries,
+                self._current_text(),
+                current_preview,
+                self.include_original.isChecked(),
+                self.write_to_file.isChecked(),
+            )
+        )
 
     def _compute_plan(self):
         """Assemble and preview the trampoline plan."""
@@ -288,7 +276,7 @@ class TrampolinePatchDialog:
             write_to_file=self.write_to_file.isChecked(),
         )
 
-    def _preview_patch(self):
+    def _preview_patch(self, live=False):
         """Preview cave allocation and trampoline bytes."""
         try:
             debug_log(
@@ -298,12 +286,17 @@ class TrampolinePatchDialog:
                 include_original=self.include_original.isChecked(),
                 custom_text=self._current_text(),
                 write_to_file=self.write_to_file.isChecked(),
+                live=live,
             )
             self.preview_plan = self._compute_plan()
-            self.preview_text = self._current_text()
+            self.preview_signature = self._current_signature()
             self.status.setText(
-                "预览成功: 入口 %d bytes | 代码洞 %d bytes"
-                % (len(self.preview_plan["entry_bytes"]), len(self.preview_plan["cave_bytes"]))
+                "%s成功: 入口 %d bytes | 代码洞 %d bytes"
+                % (
+                    "实时预览" if live else "预览",
+                    len(self.preview_plan["entry_bytes"]),
+                    len(self.preview_plan["cave_bytes"]),
+                )
             )
             debug_log(
                 "trampoline_dialog.preview.success",
@@ -312,11 +305,12 @@ class TrampolinePatchDialog:
                 cave_size=len(self.preview_plan["cave_bytes"]),
                 entry_size=len(self.preview_plan["entry_bytes"]),
                 write_to_file=self.write_to_file.isChecked(),
+                live=live,
             )
         except Exception as exc:
             self.preview_plan = None
-            self.preview_text = ""
-            self.status.setText("预览失败: %s" % exc)
+            self.preview_signature = None
+            self.status.setText("%s失败: %s" % ("实时预览" if live else "预览", exc))
             debug_log_exception(
                 "trampoline_dialog.preview.failure",
                 exc,
@@ -324,6 +318,7 @@ class TrampolinePatchDialog:
                 include_original=self.include_original.isChecked(),
                 custom_text=self._current_text(),
                 write_to_file=self.write_to_file.isChecked(),
+                live=live,
             )
         self._refresh_context_panel()
 
@@ -332,6 +327,7 @@ class TrampolinePatchDialog:
         transaction = None
         applied_count = 0
         try:
+            self.preview_timer.stop()
             debug_log(
                 "trampoline_dialog.apply.start",
                 trace_id=self.trace_id,
@@ -473,7 +469,7 @@ class TrampolinePatchDialog:
                 file_path=file_path,
             )
             self.preview_plan = plan
-            self.preview_text = self._current_text()
+            self.preview_signature = self._current_signature()
             self.dialog.accept()
         except Exception as exc:
             try:

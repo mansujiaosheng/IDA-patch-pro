@@ -15,9 +15,9 @@
 - `ui/`
   负责各个窗口和用户交互。
 - `asm/`
-  负责汇编文本解析、兼容改写、汇编兜底、右侧提示。
+  负责汇编文本解析、兼容改写、汇编兜底、汇编搜索、右侧提示。
 - `patching/`
-  负责选区、字节写入、事务、历史、回撤。
+  负责选区、范围规划、普通补丁写入、Fill Range、事务、历史、回撤。
 - `trampoline/`
   负责代码注入规划、代码洞分配、函数尾块挂接。
 - `backends/`
@@ -71,6 +71,8 @@
 - `AssembleActionHandler`
 - `TrampolineActionHandler`
 - `NopActionHandler`
+- `FillRangeActionHandler`
+- `SearchActionHandler`
 - `RollbackActionHandler`
 - `ShortcutSettingsActionHandler`
 - `PopupHooks`
@@ -164,7 +166,9 @@
 
 这个文件里最重要的行为：
 - 打开时读取当前选区原始汇编
-- 预览机器码
+- 手动/实时预览机器码
+- 单条指令场景按完整指令边界扩展补丁范围
+- 汇编超长时按本地策略决定“继续覆盖 / 改用代码注入 / 每次询问”
 - 应用补丁事务
 - 需要时自动补 NOP
 
@@ -180,6 +184,8 @@
 这个文件里最重要的行为：
 - 默认载入当前选中的原始汇编
 - 支持 `include_original`
+- 支持实时预览代码洞逐行机器码
+- 支持直接打开语法帮助表和寄存器帮助表
 - 支持仅 IDB 和写回输入文件两种模式
 - 实际落盘前重新确认代码洞位置
 
@@ -188,9 +194,33 @@
 主要职责：
 - 展示补丁历史列表。
 - 允许手工选择事务回撤。
+- 允许单条删除、批量勾选删除和清空历史记录。
 
 关键类：
 - `RollbackHistoryDialog`
+
+### `ui/fill_range_dialog.py`
+
+主要职责：
+- `Fill Range` 窗口。
+- 读取起止地址、汇编文本和尾部补齐模式。
+- 调用独立的 Fill Range 预览/应用服务。
+
+关键类：
+- `FillRangeDialog`
+
+### `ui/search_dialog.py`
+
+主要职责：
+- `汇编搜索` 窗口。
+- 收集搜索范围和汇编文本。
+- 展示搜索命中结果并支持双击跳转。
+- 管理搜索历史、结果快照恢复和批量删除。
+- 提供搜索窗口内的语法帮助表和寄存器帮助表入口。
+- 在右侧持续展示“完整指令写法”和搜索例子。
+
+关键类：
+- `AssemblySearchDialog`
 
 ### `ui/shortcut_dialog.py`
 
@@ -230,18 +260,37 @@
 说明：
 - 如果某条指令“能写但汇编失败”，优先从这里下断点/加日志。
 
+### `asm/search.py`
+
+主要职责：
+- 按汇编模式搜索当前数据库。
+- 从每个候选指令头重新汇编查询文本，再比较实际字节。
+
+关键函数：
+- `search_assembly()`
+
+### `asm/search_help.py`
+
+主要职责：
+- 生成 `汇编搜索` 右侧的使用说明和例子文本。
+- 明确区分“完整指令搜索”和“仅助记符”的差别。
+
+关键函数：
+- `build_search_usage_text()`
+
 ### `asm/rewrite.py`
 
 主要职责：
 - 汇编前兼容改写。
 - 栈变量展示名转真实可汇编操作数。
 - 内存立即数自动补 `size ptr`。
-- `call/jmp symbol`、`lea reg, symbol` 兼容改写。
+- 普通符号立即数、`[symbol]` 内存操作数、`call/jmp symbol`、`lea reg, symbol` 兼容改写。
 
 关键函数：
 - `rewrite_line_for_assembly()`
 - `infer_memory_size_keyword()`
 - `resolve_symbol_operand_ea()`
+- `resolve_memory_symbol_target_ea()`
 - `assemble_direct_branch_bytes()`
 - `fallback_assembly_candidates()`
 
@@ -289,8 +338,29 @@
 - `selected_items()`
 - `patch_region()`
 - `hook_region()`
+- `build_entry_for_ea()`
 - `get_original_entries()`
 - `get_entries_for_range()`
+- `get_entries_for_line_count()`
+
+### `patching/ranges.py`
+
+主要职责：
+- 指令边界扩展。
+- 按头遍历范围内的 item。
+
+关键函数：
+- `instruction_range_for_size()`
+- `iter_instruction_heads()`
+
+### `patching/assemble_plan.py`
+
+主要职责：
+- 普通汇编修改的非 UI 预览计划。
+- 统一处理汇编结果长度、边界扩展和尾部 NOP。
+
+关键函数：
+- `preview_assembly_patch()`
 
 ### `patching/bytes_patch.py`
 
@@ -303,6 +373,16 @@
 - `build_nop_bytes()`
 - `patch_bytes_as_code()`
 - `apply_code_patch()`
+
+### `patching/fill.py`
+
+主要职责：
+- Fill Range 的非 UI 预览与应用。
+- 重复汇编当前输入直到填满目标范围。
+
+关键函数：
+- `preview_fill_range()`
+- `apply_fill_range_plan()`
 
 ### `patching/transactions.py`
 
@@ -327,6 +407,7 @@
 主要职责：
 - 设置文件和历史文件的 JSON 读写。
 - 快捷键保存和加载。
+- 补丁历史的单条删除、批量删除和清空。
 
 关键函数：
 - `load_plugin_settings()`
@@ -335,6 +416,33 @@
 - `save_action_shortcuts()`
 - `load_patch_history()`
 - `save_patch_history()`
+- `delete_patch_history_entry()`
+- `delete_patch_history_entries()`
+- `clear_patch_history()`
+
+### `patching/search_history.py`
+
+主要职责：
+- 汇编搜索历史的持久化。
+- 搜索结果快照的序列化/反序列化。
+- 按数据库隔离搜索历史。
+
+关键函数：
+- `load_search_history()`
+- `save_search_history()`
+- `remember_search_history()`
+- `clear_search_history()`
+- `normalize_search_history_entry()`
+
+### `patching/overflow_policy.py`
+
+主要职责：
+- 保存普通 `Assemble` 在“汇编超长”场景下的默认处理策略。
+- 给 UI 和核心逻辑提供统一的策略枚举。
+
+关键函数：
+- `load_oversize_policy()`
+- `save_oversize_policy()`
 
 ### `patching/rollback.py`
 
@@ -370,6 +478,15 @@
 说明：
 - “预览没问题但应用错位”先看 planner，再看 caves。
 
+### `trampoline/hints.py`
+
+主要职责：
+- 生成代码注入窗口右侧的说明、机器码预览和高级语法例子。
+
+关键函数：
+- `build_trampoline_hint_text()`
+- `build_trampoline_example_lines()`
+
 ### `trampoline/caves.py`
 
 主要职责：
@@ -382,6 +499,7 @@
 - `find_patch_segment()`
 - `next_patch_cursor()`
 - `ensure_patch_segment()`
+- `preview_patch_segment_allocation()`
 
 ### `trampoline/function_attach.py`
 

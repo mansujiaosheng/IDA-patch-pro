@@ -7,6 +7,8 @@ PLUGIN_NAME = "ida_patch_pro"
 ACTION_ASSEMBLE = "ida_patch_pro:assemble"
 ACTION_NOP = "ida_patch_pro:nop"
 ACTION_TRAMPOLINE = "ida_patch_pro:trampoline"
+ACTION_FILL_RANGE = "ida_patch_pro:fill_range"
+ACTION_SEARCH = "ida_patch_pro:search"
 ACTION_ROLLBACK = "ida_patch_pro:rollback"
 ACTION_SHORTCUTS = "ida_patch_pro:shortcut_settings"
 
@@ -14,6 +16,8 @@ MAIN_MENU_NAME = "ida_patch_pro_menu"
 MAIN_MENU_LABEL = PLUGIN_NAME
 MAIN_MENU_PARENT_PATH = "Edit/Patch program/"
 MAIN_MENU_PATH = "%s%s/" % (MAIN_MENU_PARENT_PATH, MAIN_MENU_LABEL)
+POPUP_MENU_LABEL = "ida-patch-pro"
+POPUP_MENU_PATH = "%s/" % POPUP_MENU_LABEL
 
 PATCH_SEGMENT_NAME = ".patch"
 PATCH_FILE_SECTION_NAME = ".patchf"
@@ -31,6 +35,8 @@ ACTION_SHORTCUT_SPECS = [
     (ACTION_ASSEMBLE, "修改汇编", "Ctrl+Alt+A"),
     (ACTION_TRAMPOLINE, "代码注入", "Ctrl+Alt+T"),
     (ACTION_NOP, "NOP", "Ctrl+Alt+N"),
+    (ACTION_FILL_RANGE, "Fill Range", "Ctrl+Alt+F"),
+    (ACTION_SEARCH, "汇编搜索", "Ctrl+Alt+S"),
     (ACTION_ROLLBACK, "补丁回撤列表", "Ctrl+Alt+R"),
     (ACTION_SHORTCUTS, "快捷键设置", ""),
 ]

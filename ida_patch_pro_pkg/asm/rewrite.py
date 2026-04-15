@@ -20,7 +20,14 @@ from .operands import (
 )
 
 
-def rewrite_line_for_assembly(line, arch_key, original_entry=None):
+def join_instruction_text(mnem, operands):
+    """Join a mnemonic plus operand list back into one instruction string."""
+    if not operands:
+        return mnem
+    return "%s %s" % (mnem, ", ".join(operands))
+
+
+def rewrite_line_for_assembly(line, arch_key, original_entry=None, log_events=True):
     """Rewrite user text into a more assembler-friendly form before assembly."""
     if not original_entry:
         return line
@@ -51,7 +58,7 @@ def rewrite_line_for_assembly(line, arch_key, original_entry=None):
             rewritten.append(replacement)
 
     result = "%s %s" % (mnem, ", ".join(rewritten))
-    if result != line:
+    if log_events and result != line:
         debug_log(
             "rewrite_line",
             ea="0x%X" % original_entry.get("ea", 0) if original_entry.get("ea") is not None else "",
@@ -194,6 +201,18 @@ def resolve_direct_branch_target_ea(text, arch_key):
     return parse_immediate_value(operand)
 
 
+def resolve_memory_symbol_target_ea(operand, arch_key):
+    """Resolve simple memory operands like `[symbol+4]` to an absolute EA."""
+    _size_prefix, core = split_size_prefix(operand)
+    m = re.match(r"(?is)^(?:(?P<seg>[A-Za-z_][A-Za-z0-9_]*)\s*:)?\s*\[(?P<body>[^\]]+)\]$", core.strip())
+    if not m:
+        return None
+    body = (m.group("body") or "").strip()
+    if m.group("seg"):
+        body = "%s:%s" % (m.group("seg"), body)
+    return resolve_symbol_operand_ea(body, arch_key)
+
+
 def encode_rel32_branch(ea, mnem, target_ea, arch_key):
     """Encode a direct x86/x64 `call/jmp` as rel32 without using an assembler."""
     if arch_key != "x86/x64" or mnem not in ("call", "jmp") or target_ea is None:
@@ -228,6 +247,35 @@ def assemble_direct_branch_bytes(ea, text, arch_key):
 def is_64bit_program():
     """Return whether the current database is 64-bit."""
     return bool(idc.get_inf_attr(idc.INF_LFLAGS) & idc.LFLG_64BIT)
+
+
+def build_rip_relative_memory_operand(ea, mnem, operands, operand_index, target_ea, size_prefix=""):
+    """Build a RIP-relative memory operand candidate for simple `[symbol]` references."""
+    from .assemble import try_assemble_line, try_assemble_line_keystone
+
+    def format_operand(inner):
+        body = "[%s]" % inner
+        if size_prefix:
+            return "%s %s" % (size_prefix, body)
+        return body
+
+    for probe_inner in ("rip", "rip+0"):
+        probe_operands = list(operands)
+        probe_operands[operand_index] = format_operand(probe_inner)
+        probe_line = join_instruction_text(mnem, probe_operands)
+        probe_bytes = try_assemble_line_keystone(ea, probe_line, "x86/x64") or try_assemble_line(ea, probe_line)
+        if not probe_bytes:
+            continue
+
+        disp = target_ea - (ea + len(probe_bytes))
+        if disp < -0x80000000 or disp > 0x7FFFFFFF:
+            return None
+        if disp == 0:
+            return format_operand("rip")
+        if disp > 0:
+            return format_operand("rip+0x%X" % disp)
+        return format_operand("rip-0x%X" % (-disp))
+    return None
 
 
 def build_rip_relative_lea_candidate(ea, dst, target_ea, arch_key):
@@ -304,6 +352,84 @@ def to_x64_reg32(text):
     return None
 
 
+def build_symbolic_operand_candidates(ea, mnem, operands, arch_key):
+    """Generate compatibility candidates for generic symbol/immediate/memory operands."""
+    replacement_sets = []
+    has_replacement = False
+    for index, operand in enumerate(operands):
+        options = [(operand, None)]
+
+        if not (mnem == "lea" and index == 1):
+            immediate_target = resolve_symbol_operand_ea(operand, arch_key)
+            if immediate_target is not None:
+                immediate_operand = "0x%X" % immediate_target
+                if immediate_operand != operand:
+                    options.append(
+                        (
+                            immediate_operand,
+                            "兼容模板: 将符号操作数改写成绝对地址常量，避免汇编器无法直接解析 IDA 名称。",
+                        )
+                    )
+
+        memory_target = resolve_memory_symbol_target_ea(operand, arch_key)
+        if memory_target is not None:
+            size_prefix, _core = split_size_prefix(operand)
+            memory_note = "兼容模板: 将内存符号改写成绝对地址寻址。"
+            memory_operand = None
+            if arch_key == "x86/x64" and is_64bit_program():
+                memory_operand = build_rip_relative_memory_operand(
+                    ea,
+                    mnem,
+                    operands,
+                    index,
+                    memory_target,
+                    size_prefix=size_prefix,
+                )
+                if memory_operand:
+                    memory_note = "兼容模板: 将内存符号改写成 RIP 相对寻址，避免汇编器无法直接解析 IDA 名称。"
+            if memory_operand is None:
+                prefix = ("%s " % size_prefix) if size_prefix else ""
+                memory_operand = "%s[0x%X]" % (prefix, memory_target)
+            if memory_operand != operand:
+                options.append((memory_operand, memory_note))
+
+        replacement_sets.append(options)
+        if len(options) > 1:
+            has_replacement = True
+
+    if not has_replacement:
+        return []
+
+    candidates = []
+    seen = set()
+
+    def walk(index, current_operands, notes, replaced):
+        if index >= len(replacement_sets):
+            if not replaced:
+                return
+            candidate = join_instruction_text(mnem, current_operands)
+            if candidate in seen:
+                return
+            seen.add(candidate)
+            merged_note = " ".join(note for note in notes if note)
+            candidates.append((candidate, merged_note))
+            return
+
+        for operand_text, note in replacement_sets[index]:
+            next_notes = list(notes)
+            if note and note not in next_notes:
+                next_notes.append(note)
+            walk(
+                index + 1,
+                current_operands + [operand_text],
+                next_notes,
+                replaced or note is not None,
+            )
+
+    walk(0, [], [], False)
+    return candidates
+
+
 def fallback_assembly_candidates(ea, line, arch_key, original_entry=None):
     """Generate compatibility rewrites when the original text may fail to assemble."""
     mnem, operands = split_operands(line)
@@ -338,8 +464,11 @@ def fallback_assembly_candidates(ea, line, arch_key, original_entry=None):
                     (
                         "mov %s, 0x%X" % (operands[0], target_ea),
                         "兼容模板: 将 `lea reg, symbol` 改写成地址立即数加载。仅适合不落盘的临时场景。"
-                    )
                 )
+            )
+
+    for candidate, note in build_symbolic_operand_candidates(ea, mnem, operands, arch_key):
+        candidates.append((candidate, note))
 
     if arch_key == "x86/x64" and mnem == "mov" and len(operands) >= 2:
         dst, src = operands[0], operands[1]
