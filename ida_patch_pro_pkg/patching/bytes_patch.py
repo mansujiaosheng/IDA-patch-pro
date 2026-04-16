@@ -43,7 +43,8 @@ def patch_instruction(ea, patch_bytes):
 def patch_bytes_as_code(ea, patch_bytes):
     """Patch raw bytes and ask IDA to recreate code over the whole range."""
     end_ea = ea + len(patch_bytes)
-    ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, len(patch_bytes))
+    delete_flags = getattr(ida_bytes, "DELIT_EXPAND", ida_bytes.DELIT_SIMPLE)
+    ida_bytes.del_items(ea, delete_flags, len(patch_bytes))
     ida_bytes.patch_bytes(ea, patch_bytes)
 
     current = ea

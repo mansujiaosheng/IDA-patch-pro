@@ -4,6 +4,8 @@ import re
 import struct
 
 import ida_idaapi
+import ida_funcs
+import ida_segment
 import idc
 
 from ..data import _register_hint
@@ -149,6 +151,69 @@ def strip_symbol_operand_prefixes(text):
     return value
 
 
+def _try_resolve_name(name):
+    """尝试用 idc.get_name_ea_simple 解析单个名称，成功返回 EA，否则 None。"""
+    if not name:
+        return None
+    ea = idc.get_name_ea_simple(name)
+    if ea != ida_idaapi.BADADDR:
+        return ea
+    return None
+
+
+def _symbol_name_variants(operand):
+    """生成符号名的候选变体列表，用于 ELF/PE 跨平台符号解析。
+
+    典型场景：ELF 中用户写 call _printf，但 IDA 数据库里名字是 printf 或 printf@plt。
+    """
+    variants = [operand]
+    stripped = operand.lstrip("_")
+    if stripped and stripped != operand:
+        variants.append(stripped)
+        variants.append("." + stripped)
+        variants.append("j_" + stripped)
+    if "@" not in operand:
+        variants.append(operand + "@plt")
+        if stripped and stripped != operand:
+            variants.append(stripped + "@plt")
+    if stripped == operand:
+        variants.append("." + operand)
+        variants.append("j_" + operand)
+    unique = []
+    seen = set()
+    for name in variants:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        unique.append(name)
+    return unique
+
+
+def _iter_resolved_symbol_candidates(operand):
+    """Yield `(name, ea)` pairs for every symbol candidate that resolves in IDA."""
+    for name in _symbol_name_variants(operand):
+        ea = _try_resolve_name(name)
+        if ea is not None:
+            yield name, ea
+
+
+def _is_executable_ea(ea):
+    """Return whether an EA belongs to an executable segment."""
+    seg = ida_segment.getseg(ea)
+    if seg is None:
+        return False
+    return bool(getattr(seg, "perm", 0) & ida_segment.SEGPERM_EXEC)
+
+
+def _branch_symbol_score(name, ea):
+    """Rank branch targets so PLT/code symbols win over GOT/data aliases."""
+    is_exec = 1 if _is_executable_ea(ea) else 0
+    func = ida_funcs.get_func(ea)
+    is_func_entry = 1 if func is not None and int(func.start_ea) == int(ea) else 0
+    is_plt_like = 1 if ("@plt" in name or name.startswith(".") or name.startswith("j_")) else 0
+    return (is_exec, is_func_entry, is_plt_like)
+
+
 def resolve_symbol_operand_ea(text, arch_key):
     """Resolve a simple symbol-like operand to an EA when possible."""
     operand = strip_symbol_operand_prefixes(text)
@@ -160,9 +225,10 @@ def resolve_symbol_operand_ea(text, arch_key):
         return None
     if _register_hint(operand, arch_key):
         return None
-    ea = idc.get_name_ea_simple(operand)
-    if ea != ida_idaapi.BADADDR:
-        return ea
+
+    for name, ea in _iter_resolved_symbol_candidates(operand):
+        if ea is not None:
+            return ea
 
     for op in ("+", "-"):
         if op not in operand:
@@ -174,20 +240,57 @@ def resolve_symbol_operand_ea(text, arch_key):
             continue
         if _register_hint(base_text, arch_key):
             continue
-        base_ea = idc.get_name_ea_simple(base_text)
-        if base_ea == ida_idaapi.BADADDR:
+        for _name, base_ea in _iter_resolved_symbol_candidates(base_text):
+            offset_value = parse_immediate_value(offset_text)
+            if offset_value is None:
+                continue
+            return base_ea + offset_value if op == "+" else base_ea - offset_value
+
+    return None
+
+
+def resolve_branch_symbol_operand_ea(text, arch_key):
+    """Resolve a direct branch/call symbol, preferring executable code over GOT/data aliases."""
+    operand = strip_symbol_operand_prefixes(text)
+    if not operand:
+        return None
+    if any(ch in operand for ch in "[]()*"):
+        return None
+    if is_immediate_literal(operand):
+        return None
+    if _register_hint(operand, arch_key):
+        return None
+
+    matches = list(_iter_resolved_symbol_candidates(operand))
+    if matches:
+        matches.sort(key=lambda item: _branch_symbol_score(item[0], item[1]), reverse=True)
+        return matches[0][1]
+
+    for op in ("+", "-"):
+        if op not in operand:
             continue
+        base_text, offset_text = operand.rsplit(op, 1)
+        base_text = base_text.strip()
+        offset_text = offset_text.strip()
+        if not base_text or not offset_text or not is_immediate_literal(offset_text):
+            continue
+        if _register_hint(base_text, arch_key):
+            continue
+        base_matches = list(_iter_resolved_symbol_candidates(base_text))
+        if not base_matches:
+            continue
+        base_matches.sort(key=lambda item: _branch_symbol_score(item[0], item[1]), reverse=True)
         offset_value = parse_immediate_value(offset_text)
         if offset_value is None:
             continue
+        base_ea = base_matches[0][1]
         return base_ea + offset_value if op == "+" else base_ea - offset_value
-
     return None
 
 
 def resolve_direct_branch_target_ea(text, arch_key):
     """Resolve a direct `call/jmp` operand into an absolute EA when possible."""
-    target_ea = resolve_symbol_operand_ea(text, arch_key)
+    target_ea = resolve_branch_symbol_operand_ea(text, arch_key)
     if target_ea is not None:
         return target_ea
 
@@ -438,7 +541,7 @@ def fallback_assembly_candidates(ea, line, arch_key, original_entry=None):
 
     candidates = []
     if arch_key == "x86/x64" and len(operands) >= 1 and mnem in ("call", "jmp"):
-        target_ea = resolve_symbol_operand_ea(operands[0], arch_key)
+        target_ea = resolve_branch_symbol_operand_ea(operands[0], arch_key)
         if target_ea is not None:
             candidates.append(
                 (

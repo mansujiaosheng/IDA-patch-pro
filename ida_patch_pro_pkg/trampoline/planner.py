@@ -11,14 +11,14 @@ from ..asm.operands import (
     split_operands,
 )
 from ..asm.rewrite import canonical_x64_reg
-from ..backends.pe_backend import prepare_file_patch_segment
 from ..constants import (
     PATCH_SEGMENT_NAME,
     PATCH_STUB_ALIGN,
     TRAMPOLINE_ORIG_MARKER_RE,
 )
 from ..logging_utils import debug_log
-from .caves import preview_patch_segment_allocation, next_patch_cursor
+from .caves import preview_patch_segment_allocation
+from .file_storage import prepare_file_trampoline_storage
 
 
 def trampoline_risk_notes(entries):
@@ -246,20 +246,39 @@ def preview_trampoline_plan(start_ea, region_size, custom_text, original_entries
     arch_key = processor_key()
 
     if write_to_file:
-        file_plan = prepare_file_patch_segment(PATCH_STUB_ALIGN, apply_changes=False)
+        file_plan = prepare_file_trampoline_storage(
+            PATCH_STUB_ALIGN,
+            preferred_ea=start_ea,
+            apply_changes=False,
+        )
         seg = file_plan.get("segment")
-        cave_start = next_patch_cursor(seg) if seg is not None else file_plan["ea_start"]
-        for _ in range(6):
+        cave_start = file_plan["cave_start"]
+        for _ in range(8):
             cave_bytes, _, cave_infos = assemble_multiline(cave_start, cave_text, arch_key, cave_entries)
-            required_total = (cave_start - file_plan["ea_start"]) + len(cave_bytes) + PATCH_STUB_ALIGN
-            if required_total <= file_plan["raw_size"]:
-                break
-            file_plan = prepare_file_patch_segment(required_total, apply_changes=False)
             seg = file_plan.get("segment")
-            cave_start = next_patch_cursor(seg) if seg is not None else file_plan["ea_start"]
-        storage_mode = "file_section"
-        segment_name = file_plan["section_name"]
-        alloc_base_ea = file_plan["ea_start"]
+            if file_plan["storage_mode"] == "file_section":
+                required_total = (
+                    (cave_start - file_plan["alloc_base_ea"])
+                    + len(cave_bytes)
+                    + PATCH_STUB_ALIGN
+                )
+                if required_total <= file_plan["available_size"]:
+                    break
+            else:
+                required_total = len(cave_bytes) + PATCH_STUB_ALIGN
+                if required_total <= file_plan["available_size"]:
+                    break
+            file_plan = prepare_file_trampoline_storage(
+                required_total,
+                preferred_ea=start_ea,
+                apply_changes=False,
+            )
+            seg = file_plan.get("segment")
+            cave_start = file_plan["cave_start"]
+        storage_mode = file_plan["storage_mode"]
+        segment_name = file_plan["segment_name"]
+        alloc_base_ea = file_plan["alloc_base_ea"]
+        storage_text = file_plan["storage_text"]
     else:
         idb_plan = preview_patch_segment_allocation(len(cave_text) + PATCH_STUB_ALIGN)
         seg = idb_plan["segment"]
@@ -268,6 +287,7 @@ def preview_trampoline_plan(start_ea, region_size, custom_text, original_entries
         storage_mode = "idb"
         segment_name = idb_plan["segment_name"]
         alloc_base_ea = idb_plan["alloc_base_ea"]
+        storage_text = "仅 IDB 内 %s 段" % PATCH_SEGMENT_NAME
 
     entry_bytes, _ = assemble_bytes(start_ea, "jmp 0x%X" % cave_start, arch_key)
     if len(entry_bytes) > region_size:
@@ -283,12 +303,14 @@ def preview_trampoline_plan(start_ea, region_size, custom_text, original_entries
         storage_mode=storage_mode,
         write_to_file=write_to_file,
         segment_name=segment_name,
+        storage_text=storage_text,
         custom_text=custom_text,
         line_count=len(lines),
     )
     return {
         "segment": seg,
         "segment_name": segment_name,
+        "storage_text": storage_text,
         "cave_start": cave_start,
         "cave_end": cave_start + len(cave_bytes),
         "entry_bytes": entry_bytes,

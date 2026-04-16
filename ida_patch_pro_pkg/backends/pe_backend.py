@@ -9,6 +9,7 @@ import ida_segment
 
 from ..constants import PATCH_FILE_SECTION_NAME, PATCH_SEGMENT_CLASS, PE_SECTION_CHARACTERISTICS_RX
 from ..ida_adapter import (
+    add_segm_ex_compat,
     current_imagebase,
     find_segment_by_name,
     input_file_path,
@@ -264,7 +265,7 @@ def sync_file_patch_segment_to_idb(info):
     """Create or resize the IDA segment that mirrors the PE patch section."""
     seg = ida_segment.getseg(info["ea_start"])
     if seg is None:
-        if not ida_segment.add_segm_ex(
+        if not add_segm_ex_compat(
             info["ea_start"],
             info["ea_start"] + info["raw_size"],
             0,

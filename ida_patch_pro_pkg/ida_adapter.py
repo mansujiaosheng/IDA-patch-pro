@@ -308,3 +308,62 @@ def resolve_ea_text(text):
     if parsed is not None:
         return int(parsed)
     return None
+
+
+def add_segm_ex_compat(start_ea, end_ea, base, bitness, sa, sclass, flags):
+    """兼容 IDA 9.2+ 的 add_segm_ex 封装。
+
+    IDA 9.2 将 add_segm_ex 签名从 7 个位置参数改为 4 个：
+        add_segm_ex(segment_t, name, sclass, flags)
+    旧版签名：
+        add_segm_ex(start_ea, end_ea, base, bitness, sa, sclass, flags)
+
+    此函数尝试三种方案：
+    1. 新 API add_segm_ex(segment_t, name, sclass, flags)
+    2. 替代 API add_segm(para, start, end, name, sclass, flags)
+    3. 回退旧 API add_segm_ex(7参数)
+    """
+    # 确保 sclass 是字符串
+    if isinstance(sclass, int):
+        # 尝试映射常见的 sc* 常量到字符串
+        sc_map = {
+            getattr(ida_segment, 'scPub', 0): 'CODE',
+            getattr(ida_segment, 'scCode', 0): 'CODE',
+            getattr(ida_segment, 'scData', 0): 'DATA',
+            getattr(ida_segment, 'scBss', 0): 'BSS',
+        }
+        sclass = sc_map.get(sclass, 'CODE')
+
+    # 方案1：新 API add_segm_ex(segment_t, name, sclass, flags)
+    try:
+        seg = ida_segment.segment_t()
+        seg.start_ea = start_ea
+        seg.end_ea = end_ea
+        seg.bitness = bitness
+        seg.align = sa
+        seg.comb = ida_segment.scPub
+        name = None
+        return ida_segment.add_segm_ex(seg, name, sclass, flags)
+    except (TypeError, AttributeError):
+        pass
+
+    # 方案2：替代 API add_segm(para, start, end, name, sclass, flags)
+    try:
+        para = start_ea >> 4
+        name = None
+        result = ida_segment.add_segm(para, start_ea, end_ea, name, sclass, flags)
+        if result:
+            # add_segm 不会自动设置 bitness，需要手动设置
+            seg = ida_segment.getseg(start_ea)
+            if seg is not None:
+                seg.bitness = bitness
+                ida_segment.update_segm(seg)
+        return result
+    except (TypeError, AttributeError):
+        pass
+
+    # 方案3：回退旧 API add_segm_ex(7参数)
+    try:
+        return ida_segment.add_segm_ex(start_ea, end_ea, base, bitness, sa, sclass, flags)
+    except (TypeError, AttributeError):
+        raise RuntimeError("add_segm_ex: 无法适配当前 IDA 版本的 API 签名。")

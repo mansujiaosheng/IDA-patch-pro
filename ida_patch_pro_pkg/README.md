@@ -187,6 +187,7 @@
 - 支持实时预览代码洞逐行机器码
 - 支持直接打开语法帮助表和寄存器帮助表
 - 支持仅 IDB 和写回输入文件两种模式
+- 写回输入文件时按格式选择策略：PE/DLL/PYD 走 `.patchf`，ELF/SO 自动扩展最后一个 `PT_LOAD`
 - 实际落盘前重新确认代码洞位置
 
 ### `ui/rollback_dialog.py`
@@ -256,6 +257,24 @@
 - `try_assemble_line_keystone()`
 - `assemble_bytes()`
 - `assemble_multiline()`
+
+### `asm/rewrite.py`
+
+主要职责：
+- 汇编兼容改写。
+- 符号解析、分支目标解析、RIP 相对改写。
+- 为 IDA assembler / Keystone 失败场景生成兼容候选。
+
+关键函数：
+- `rewrite_line_for_assembly()`
+- `resolve_symbol_operand_ea()`
+- `resolve_branch_symbol_operand_ea()`
+- `assemble_direct_branch_bytes()`
+- `fallback_assembly_candidates()`
+
+这个文件里最近需要特别注意的行为：
+- `lea reg, symbol` 在 x64 文件补丁场景下会优先改成 RIP 相对寻址，避免 ASLR 下失效。
+- `call/jmp symbol` 在 trampoline 里会优先解析到可执行代码入口，而不是 GOT / 数据别名；例如 ELF 下的 `_printf` 会优先落到 `.printf` / `printf@plt` 风格入口。
 
 说明：
 - 如果某条指令“能写但汇编失败”，优先从这里下断点/加日志。
@@ -512,6 +531,34 @@
 - `cleanup_trampoline_tail()`
 
 ## `backends/`
+
+### `backends/elf_backend.py`
+
+主要职责：
+- ELF / SO 写回输入文件时的 `.patchf` 规划与同步。
+- 扩展最后一个 `PT_LOAD`，为 trampoline 提供文件内可执行代码洞。
+
+关键函数：
+- `elf_patch_segment_info()`
+- `create_elf_patch_segment()`
+- `extend_elf_patch_segment()`
+- `sync_elf_patch_segment_to_idb()`
+- `prepare_elf_patch_segment()`
+
+这个文件里最近需要特别注意的行为：
+- 当前策略不是把补丁区插到 ELF 文件中间，而是追加到文件尾，再扩展最后一个 `PT_LOAD` 去覆盖这段补丁区。
+- 创建 patch 区后，后续同步和实际写入必须继续使用同一块 `.patchf`，不能在“当前 EOF”上重新漂移计算一块新地址，否则会导致文件已写字节和运行时映射范围不一致。
+- IDB 里的 `.patchf` 同步现在直接按 `raw_ptr/raw_size` 从输入文件读取字节补进段内容，不再依赖 `file2base()` 成功与否。
+
+### `backends/filemap.py`
+
+主要职责：
+- 维护 EA <-> 文件偏移映射。
+- 为 `.patchf` 这类文件内补丁段提供回退映射。
+
+这个文件里最近需要特别注意的行为：
+- ELF `.patchf` 的映射会优先参考段注释里的 `raw_ptr`。
+- 若现有 `.patchf` 映射已经超出当前文件大小，应视为过期状态，不能继续当成有效 patch 区复用。
 
 ### `backends/filemap.py`
 

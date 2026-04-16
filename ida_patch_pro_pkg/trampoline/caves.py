@@ -37,9 +37,18 @@ def is_file_cave_byte(ea):
     if ea_file_offset(ea) is None:
         return False
     flags = ida_bytes.get_flags(ea)
-    if not ida_bytes.is_unknown(flags):
+    if ida_bytes.get_byte(ea) not in FILE_CAVE_FILL_BYTES:
         return False
-    return ida_bytes.get_byte(ea) in FILE_CAVE_FILL_BYTES
+    if ida_bytes.is_unknown(flags):
+        return True
+    is_align = getattr(ida_bytes, "is_align", None)
+    if callable(is_align):
+        try:
+            if is_align(flags):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def file_cave_candidates(preferred_ea=None):

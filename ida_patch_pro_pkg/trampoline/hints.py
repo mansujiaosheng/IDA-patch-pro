@@ -3,8 +3,9 @@
 from itertools import zip_longest
 
 from ..asm.operands import sanitize_asm_line
-from ..constants import PATCH_FILE_SECTION_NAME, PATCH_SEGMENT_NAME
+from ..constants import PATCH_SEGMENT_NAME
 from ..logging_utils import format_bytes_hex
+from .file_storage import file_storage_behavior_text, file_storage_display_text, preview_storage_source_text
 
 
 def _selected_original_lines(original_entries, limit=2):
@@ -98,7 +99,7 @@ def build_trampoline_hint_text(
     )
     lines.append(
         "- 存储位置: %s"
-        % ("输入文件内 `%s` 节" % PATCH_FILE_SECTION_NAME if write_to_file else "仅 IDB 内 .patch 段")
+        % (file_storage_display_text() if write_to_file else "仅 IDB 内 .patch 段")
     )
 
     lines.append("")
@@ -124,12 +125,7 @@ def build_trampoline_hint_text(
                 "预览结果:",
                 "- 代码洞段: %s" % (preview_plan.get("segment_name") or ""),
                 "- 代码洞起始: 0x%X" % preview_plan["cave_start"],
-                "- 代码洞来源: %s"
-                % (
-                    "输入文件里的专用补丁节 `%s`" % PATCH_FILE_SECTION_NAME
-                    if preview_plan.get("storage_mode") == "file_section"
-                    else "IDB 专用 %s 段" % PATCH_SEGMENT_NAME
-                ),
+                "- 代码洞来源: %s" % preview_storage_source_text(preview_plan),
                 "- 入口机器码: %s" % format_bytes_hex(preview_plan["entry_bytes"]),
                 "- 代码洞总长度: %d bytes" % len(preview_plan["cave_bytes"]),
             ]
@@ -164,7 +160,7 @@ def build_trampoline_hint_text(
     lines.append("")
     lines.append("注意:")
     lines.append("- 不写入输入文件时，默认在 IDB 内新增/复用 `%s` 段" % PATCH_SEGMENT_NAME)
-    lines.append("- 写入输入文件时，默认创建/扩展 `%s` 节；不再依赖现成 code cave" % PATCH_FILE_SECTION_NAME)
+    lines.append("- %s" % file_storage_behavior_text())
     lines.append("- `{{orig}}` / `{{orig:N}}` 是高级用法，不写也可以正常使用")
     lines.append("- 代码洞更接近 CE 的 `newmem` 主体：只写你想执行的完整顺序即可")
     lines.append("- 若启用末尾自动补齐原指令，控制流/RIP 相对寻址仍需人工确认")

@@ -5,7 +5,6 @@ import ida_kernwin
 import idc
 
 from ..asm.operands import processor_key
-from ..backends.pe_backend import prepare_file_patch_segment
 from ..constants import (
     PATCH_FILE_SECTION_NAME,
     PATCH_SEGMENT_NAME,
@@ -23,6 +22,7 @@ from ..patching.transactions import (
     record_transaction_operation,
 )
 from ..trampoline.caves import ensure_patch_segment, next_patch_cursor
+from ..trampoline.file_storage import file_storage_tooltip_text, prepare_file_trampoline_storage
 from ..trampoline.hints import build_trampoline_hint_text
 from ..trampoline.function_attach import attach_cave_to_owner_function
 from ..trampoline.planner import preview_trampoline_plan
@@ -69,9 +69,10 @@ class TrampolinePatchDialog:
         note = QtWidgets.QLabel(
             "说明: 原地址会写入 `jmp` 跳板，再在代码洞里执行你的自定义代码。"
             " 不勾选“同时写入输入文件”时，代码洞只存在于 IDB 的 `%s` 段；"
-            " 勾选后会自动创建/扩展输入文件中的 `%s` 节，适合实际运行和调试。"
+            " 勾选后会按当前文件格式自动选择写回策略：PE/DLL/PYD 会创建或扩展 `%s`，"
+            " ELF/SO 会自动扩展最后一个 PT_LOAD 来承载 `%s`，适合实际运行和调试。"
             " 高级用法可在编辑框中使用 `{{orig}}` / `{{orig:N}}`。"
-            % (PATCH_SEGMENT_NAME, PATCH_FILE_SECTION_NAME),
+            % (PATCH_SEGMENT_NAME, PATCH_FILE_SECTION_NAME, PATCH_FILE_SECTION_NAME),
             self.dialog,
         )
         note.setWordWrap(True)
@@ -113,7 +114,7 @@ class TrampolinePatchDialog:
         toolbar.addWidget(self.load_original_btn)
 
         self.write_to_file = QtWidgets.QCheckBox("同时写入输入文件", self.dialog)
-        self.write_to_file.setToolTip("勾选后会创建或扩展输入文件中的专用补丁节，并把入口/代码洞都写回输入文件。")
+        self.write_to_file.setToolTip(file_storage_tooltip_text())
         self.write_to_file.stateChanged.connect(self._on_text_changed)
         toolbar.addWidget(self.write_to_file)
 
@@ -372,9 +373,31 @@ class TrampolinePatchDialog:
                     + len(plan["cave_bytes"])
                     + PATCH_STUB_ALIGN
                 )
-                file_info = prepare_file_patch_segment(required_total, apply_changes=True)
-                seg = file_info.get("segment")
-                new_cave_start = next_patch_cursor(seg) if seg is not None else plan["cave_start"]
+                file_info = prepare_file_trampoline_storage(
+                    required_total,
+                    preferred_ea=self.start_ea,
+                    apply_changes=True,
+                )
+                new_cave_start = file_info["cave_start"]
+                if new_cave_start != plan["cave_start"]:
+                    plan = preview_trampoline_plan(
+                        self.start_ea,
+                        self.region_size,
+                        self._current_text(),
+                        self.original_entries,
+                        self.include_original.isChecked(),
+                        write_to_file=self.write_to_file.isChecked(),
+                    )
+                    cave_start = plan["cave_start"]
+                    cave_end = plan["cave_end"]
+            elif plan.get("storage_mode") == "file_cave":
+                required_total = len(plan["cave_bytes"]) + PATCH_STUB_ALIGN
+                file_info = prepare_file_trampoline_storage(
+                    required_total,
+                    preferred_ea=self.start_ea,
+                    apply_changes=False,
+                )
+                new_cave_start = file_info["cave_start"]
                 if new_cave_start != plan["cave_start"]:
                     plan = preview_trampoline_plan(
                         self.start_ea,
@@ -399,6 +422,7 @@ class TrampolinePatchDialog:
                     "cave_start": cave_start,
                     "cave_end": cave_end,
                     "owner_ea": self.start_ea,
+                    "storage_mode": plan.get("storage_mode") or "",
                 },
             )
             record_transaction_operation(
@@ -415,13 +439,6 @@ class TrampolinePatchDialog:
             )
             applied_count = 1
             idc.set_name(cave_start, "patch_cave_%X" % self.start_ea, idc.SN_NOWARN)
-            if not attach_cave_to_owner_function(self.start_ea, cave_start, cave_end):
-                debug_log(
-                    "trampoline.attach_tail.failure",
-                    owner="0x%X" % self.start_ea,
-                    cave_start="0x%X" % cave_start,
-                    cave_end="0x%X" % cave_end,
-                )
 
             entry_patch = plan["entry_bytes"]
             if len(entry_patch) < self.region_size:
