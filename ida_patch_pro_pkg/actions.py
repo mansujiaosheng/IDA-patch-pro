@@ -4,7 +4,9 @@ import ida_kernwin
 
 from .constants import (
     ACTION_ASSEMBLE,
+    ACTION_EXPORT_PACKAGE,
     ACTION_FILL_RANGE,
+    ACTION_IMPORT_PACKAGE,
     ACTION_NOP,
     ACTION_ROLLBACK,
     ACTION_SEARCH,
@@ -21,6 +23,10 @@ from .constants import (
 from .logging_utils import debug_log_exception
 from .patching.bytes_patch import apply_code_patch, build_nop_bytes
 from .patching.history_store import load_action_shortcuts, shortcut_or_none
+from .patching.package_io import (
+    export_patch_package_via_dialog,
+    import_patch_package_via_dialog,
+)
 from .patching.rollback import rollback_partial_transaction
 from .patching.selection import selected_items
 from .patching.transactions import (
@@ -75,10 +81,7 @@ def detach_main_menu_actions():
 
 
 class AssembleActionHandler(ida_kernwin.action_handler_t):
-    """Action handler for the '修改汇编' popup command."""
-
     def activate(self, ctx):
-        """Open the assemble dialog."""
         try:
             AssemblePatchDialog(ctx).exec()
         except Exception as exc:
@@ -86,17 +89,13 @@ class AssembleActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
 class TrampolineActionHandler(ida_kernwin.action_handler_t):
-    """Action handler for the CE-style trampoline/code-cave command."""
-
     def activate(self, ctx):
-        """Open the trampoline patch dialog."""
         try:
             TrampolinePatchDialog(ctx).exec()
         except Exception as exc:
@@ -104,29 +103,27 @@ class TrampolineActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
 class NopActionHandler(ida_kernwin.action_handler_t):
-    """Action handler for filling the current range with NOP instructions."""
-
     def activate(self, ctx):
-        """Patch selected instructions or current item with NOP bytes."""
         transaction = None
         applied_count = 0
         try:
             items = list(selected_items(ctx))
             if not items:
                 raise RuntimeError("当前没有可 NOP 的目标。")
+
             transaction = begin_patch_transaction(
                 "nop",
                 "NOP",
                 items[0][0],
                 meta={"item_count": len(items)},
             )
+
             patched = 0
             for ea, size in items:
                 nop_bytes = build_nop_bytes(ea, size)
@@ -140,6 +137,7 @@ class NopActionHandler(ida_kernwin.action_handler_t):
                 apply_code_patch(ea, nop_bytes, write_to_file=False)
                 applied_count += 1
                 patched += 1
+
             commit_patch_transaction(transaction)
             ida_kernwin.msg("[%s] NOP 完成，处理了 %d 个条目。\n" % (PLUGIN_NAME, patched))
         except Exception as exc:
@@ -151,17 +149,13 @@ class NopActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
 class FillRangeActionHandler(ida_kernwin.action_handler_t):
-    """Action handler for repeated assembly fill over a target range."""
-
     def activate(self, ctx):
-        """Open the Fill Range dialog."""
         try:
             FillRangeDialog(ctx).exec()
         except Exception as exc:
@@ -170,17 +164,13 @@ class FillRangeActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
 class SearchActionHandler(ida_kernwin.action_handler_t):
-    """Action handler that opens the assembly search dialog."""
-
     def activate(self, ctx):
-        """Open the assembly search dialog."""
         try:
             AssemblySearchDialog(ctx).exec()
         except Exception as exc:
@@ -189,17 +179,13 @@ class SearchActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
 class RollbackActionHandler(ida_kernwin.action_handler_t):
-    """Action handler that opens the rollback history list."""
-
     def activate(self, ctx):
-        """Open the rollback list dialog."""
         try:
             RollbackHistoryDialog(ctx).exec()
         except Exception as exc:
@@ -208,17 +194,43 @@ class RollbackActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Enable the action only inside the disassembly view."""
         if ctx.widget_type == ida_kernwin.BWN_DISASM:
             return ida_kernwin.AST_ENABLE_FOR_WIDGET
         return ida_kernwin.AST_DISABLE_FOR_WIDGET
 
 
-class ShortcutSettingsActionHandler(ida_kernwin.action_handler_t):
-    """Action handler that opens the shortcut settings dialog."""
-
+class ExportPackageActionHandler(ida_kernwin.action_handler_t):
     def activate(self, ctx):
-        """Open the shortcut settings dialog."""
+        try:
+            export_patch_package_via_dialog()
+        except Exception as exc:
+            debug_log_exception("export_package.failure", exc)
+            ida_kernwin.warning("导出补丁包失败:\n%s" % exc)
+        return 1
+
+    def update(self, ctx):
+        if ctx.widget_type == ida_kernwin.BWN_DISASM:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_ENABLE_ALWAYS
+
+
+class ImportPackageActionHandler(ida_kernwin.action_handler_t):
+    def activate(self, ctx):
+        try:
+            import_patch_package_via_dialog()
+        except Exception as exc:
+            debug_log_exception("import_package.failure", exc)
+            ida_kernwin.warning("导入补丁包失败:\n%s" % exc)
+        return 1
+
+    def update(self, ctx):
+        if ctx.widget_type == ida_kernwin.BWN_DISASM:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_ENABLE_ALWAYS
+
+
+class ShortcutSettingsActionHandler(ida_kernwin.action_handler_t):
+    def activate(self, ctx):
         try:
             ShortcutSettingsDialog().exec()
         except Exception as exc:
@@ -227,15 +239,11 @@ class ShortcutSettingsActionHandler(ida_kernwin.action_handler_t):
         return 1
 
     def update(self, ctx):
-        """Keep shortcut settings available from global menu entry points."""
         return ida_kernwin.AST_ENABLE_ALWAYS
 
 
 class PopupHooks(ida_kernwin.UI_Hooks):
-    """UI hook that injects plugin actions into IDA's disassembly popup menu."""
-
     def finish_populating_widget_popup(self, widget, popup, ctx=None):
-        """Attach custom actions when the popup belongs to a disassembly widget."""
         if ida_kernwin.get_widget_type(widget) != ida_kernwin.BWN_DISASM:
             return
 
@@ -251,12 +259,14 @@ class PopupHooks(ida_kernwin.UI_Hooks):
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_FILL_RANGE, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_SEARCH, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_ROLLBACK, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_EXPORT_PACKAGE, POPUP_MENU_PATH)
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_IMPORT_PACKAGE, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_SHORTCUTS, POPUP_MENU_PATH)
 
 
 def register_actions():
-    """Register all plugin actions with the current shortcut settings."""
     shortcuts = load_action_shortcuts()
+
     for action_name in iter_plugin_action_names():
         try:
             ida_kernwin.unregister_action(action_name)
@@ -272,6 +282,7 @@ def register_actions():
             "调用 IDA 自带的 Assemble 补丁功能",
         )
     )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_TRAMPOLINE,
@@ -281,6 +292,7 @@ def register_actions():
             "创建代码洞并写入跳板补丁",
         )
     )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_NOP,
@@ -290,6 +302,7 @@ def register_actions():
             "将当前指令或选中范围填充为 NOP",
         )
     )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_FILL_RANGE,
@@ -299,6 +312,7 @@ def register_actions():
             "重复汇编当前输入并填满指定范围",
         )
     )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_SEARCH,
@@ -308,6 +322,7 @@ def register_actions():
             "按汇编模式搜索当前数据库中的匹配位置",
         )
     )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_ROLLBACK,
@@ -317,6 +332,27 @@ def register_actions():
             "打开补丁事务列表，并手动选择要回撤的那一次",
         )
     )
+
+    ida_kernwin.register_action(
+        ida_kernwin.action_desc_t(
+            ACTION_EXPORT_PACKAGE,
+            "导出补丁包",
+            ExportPackageActionHandler(),
+            shortcut_or_none(shortcuts.get(ACTION_EXPORT_PACKAGE)),
+            "把当前 active 补丁事务导出成可分享补丁包",
+        )
+    )
+
+    ida_kernwin.register_action(
+        ida_kernwin.action_desc_t(
+            ACTION_IMPORT_PACKAGE,
+            "导入补丁包",
+            ImportPackageActionHandler(),
+            shortcut_or_none(shortcuts.get(ACTION_IMPORT_PACKAGE)),
+            "导入补丁包并把补丁重放到当前 IDB",
+        )
+    )
+
     ida_kernwin.register_action(
         ida_kernwin.action_desc_t(
             ACTION_SHORTCUTS,
@@ -329,7 +365,6 @@ def register_actions():
 
 
 def unregister_actions():
-    """Unregister all plugin actions."""
     for action_name in iter_plugin_action_names():
         try:
             ida_kernwin.unregister_action(action_name)

@@ -51,6 +51,9 @@
 - 支持 ELF / SO 在写回输入文件时自动扩展最后一个 `PT_LOAD` 来承载 `.patchf`
 - 支持 ELF / SO 以“追加到文件尾 + 扩展最后一个 `PT_LOAD`”的方式写回 `.patchf`，避免因中间插入数据破坏 ELF 结构
 - 支持在 trampoline 里对 `call/jmp symbol` 优先解析到可执行代码入口（如 `.plt` / 跳板函数），避免误跳到 GOT / 数据符号导致运行时崩溃
+- 支持导出/导入补丁包
+- 支持补丁包记录输入文件导出前后的 SHA256，并在导入时校验“当前文件是否等于原始状态或目标状态”
+- 支持代码注入类补丁包在导入时优先按原始注入参数重放，而不是仅按结果字节硬写
 - 支持按列表选择任意一条插件补丁事务回撤
 - 支持在补丁回撤列表中批量勾选删除历史记录
 - 支持给插件动作设置并保存自定义快捷键
@@ -104,7 +107,7 @@
 - [ida_patch_pro_pkg/ui](./ida_patch_pro_pkg/ui)：各个非模态窗口，分别负责普通汇编修改、代码注入、Fill Range、汇编搜索、回撤列表、快捷键设置和参考表。
 - [ida_patch_pro_pkg/asm](./ida_patch_pro_pkg/asm)：汇编文本解析、符号兼容改写、Keystone 兜底、汇编搜索、右侧提示和模板建议。
 - [ida_patch_pro_pkg/patching](./ida_patch_pro_pkg/patching)：选区获取、范围规划、普通补丁写入、Fill Range、事务记录、历史保存、补丁回撤。
-- [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline)：代码洞分配、trampoline 规划、风险提示、函数尾块挂接。
+- [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline)：代码洞分配、trampoline 规划、风险提示、函数尾块挂接，以及代码注入应用主链。
 - [ida_patch_pro_pkg/backends](./ida_patch_pro_pkg/backends)：输入文件写回、PE `.patchf` 节管理、EA 与文件偏移映射。
 - [ida_patch_pro_pkg/runtime](./ida_patch_pro_pkg/runtime)：运行时日志、历史、设置文件路径。
 - [ida_patch_pro_pkg/core.py](./ida_patch_pro_pkg/core.py)：兼容薄壳。现在只保留对旧入口的兼容，不再承载主要逻辑。
@@ -189,6 +192,24 @@ D:\TOOL\ida_9.2\plugins\ida_patch_pro.py
 
 - x86/x64 的 `call/jmp symbol` 在代码洞里会优先解析到可执行代码入口；例如 ELF 下用户写 `call _printf` 时，会优先落到 `.printf` / `printf@plt` 这类可执行入口，而不是 GOT / 数据别名。
 - 当前 ELF 写回路径已经实测打通“注入后实际运行”的场景；若旧样本曾被更早版本的 ELF 实验逻辑改坏，建议先恢复原始文件后再重新注入。
+- 代码注入在真正应用时会先写 trampoline body，再校验 IDB / 输入文件里的 payload，最后才提交入口 `jmp` 对应事务；回撤记录也会同时包含 cave 和 entry 两部分。
+
+### 导出/导入补丁包
+
+1. 在反汇编窗口右键点击 `导出补丁包`，可把当前 active 补丁事务打包为 `.idppatch.json`。
+2. 导出时会记录：
+   - 补丁事务本身
+   - 输入文件导出前的 `SHA256`
+   - 输入文件导出后的 `SHA256`
+3. 代码注入类事务还会额外记录原始注入参数，包括自定义汇编、`{{orig}}` 相关设置、覆盖范围、原始指令快照等 replay 信息。
+4. 右键点击 `导入补丁包` 后，插件会先校验当前输入文件是否等于导出前原始状态，或已经等于导出时目标状态。
+5. 对普通补丁，导入仍按事务和字节结果重放。
+6. 对代码注入事务，导入会优先按原始注入参数重新执行一次代码注入主链，而不是只硬写入口 `jmp` / payload 结果字节。
+
+补充说明：
+
+- 这套“按原始注入参数重放”对新导出的补丁包效果最好；旧版本插件导出的历史包如果没有 replay 元数据，会自动回退到兼容的字节级导入路径。
+- 如果你刚修过代码注入或补丁包逻辑，建议重新导出一次新包再做导入测试。
 
 ### Fill Range
 

@@ -1,6 +1,7 @@
 """Thin wrappers around frequently-used IDA APIs."""
 
 import glob
+import hashlib
 import os
 import sys
 
@@ -12,16 +13,208 @@ import ida_nalt
 import ida_segment
 import idc
 
+_LAST_RESOLVED_INPUT_PATH = ""
+
+
+def _normalize_existing_path(path):
+    """Normalize one candidate path and keep only existing non-database files."""
+    value = (path or "").strip()
+    if not value:
+        return ""
+    try:
+        value = os.path.normcase(os.path.abspath(value))
+    except Exception:
+        return ""
+    if not os.path.isfile(value):
+        return ""
+    if os.path.splitext(value)[1].lower() in (".i64", ".idb", ".id0", ".id1", ".nam", ".til"):
+        return ""
+    return value
+
+
+def _database_expected_file_info():
+    """Return the current database's recorded input-file size/hash when available."""
+    info = {"size": None, "md5": ""}
+    getter = getattr(ida_nalt, "retrieve_input_file_size", None)
+    if getter is not None:
+        try:
+            size = int(getter())
+            if size > 0:
+                info["size"] = size
+        except Exception:
+            pass
+
+    getter = getattr(ida_nalt, "retrieve_input_file_md5", None)
+    if getter is not None:
+        try:
+            digest = getter()
+            if digest:
+                info["md5"] = bytes(digest).hex().lower()
+        except Exception:
+            pass
+    return info
+
+
+def _candidate_matches_database(path, expected):
+    """Return whether one on-disk file matches the current database fingerprint."""
+    path = _normalize_existing_path(path)
+    if not path:
+        return False
+
+    expected_size = expected.get("size")
+    if expected_size is not None:
+        try:
+            if os.path.getsize(path) != expected_size:
+                return False
+        except Exception:
+            return False
+
+    expected_md5 = (expected.get("md5") or "").lower()
+    if not expected_md5:
+        return True
+
+    digest = hashlib.md5()
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except Exception:
+        return False
+    return digest.hexdigest().lower() == expected_md5
+
+
+def _root_filename_candidates():
+    """Return plausible input-file basenames from the current database."""
+    names = []
+
+    getter = getattr(idc, "get_root_filename", None)
+    if getter is not None:
+        try:
+            root = (getter() or "").strip()
+            if root:
+                names.append(root)
+                if "." not in os.path.basename(root):
+                    names.append("%s.exe" % root)
+        except Exception:
+            pass
+
+    for value in (input_file_path_raw(), current_idb_path()):
+        base = os.path.basename((value or "").strip())
+        if base and base not in names:
+            names.append(base)
+    return [name for name in names if name]
+
+
+def _search_matching_input_file(expected):
+    """Search nearby directories for a file matching the current database fingerprint."""
+    names = _root_filename_candidates()
+    if not names:
+        return ""
+
+    candidate_dirs = []
+    for value in (current_idb_path(), input_file_path_raw()):
+        directory = os.path.dirname(_normalize_existing_path(value) or os.path.abspath(value or "")) if value else ""
+        if directory and os.path.isdir(directory) and directory not in candidate_dirs:
+            candidate_dirs.append(directory)
+
+    extra_dirs = []
+    for directory in list(candidate_dirs):
+        parent = os.path.dirname(directory)
+        if parent and os.path.isdir(parent) and parent not in candidate_dirs and parent not in extra_dirs:
+            extra_dirs.append(parent)
+    candidate_dirs.extend(extra_dirs)
+
+    matches = []
+    for root in candidate_dirs:
+        try:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for name in names:
+                    if name not in filenames:
+                        continue
+                    candidate = os.path.join(dirpath, name)
+                    candidate = _normalize_existing_path(candidate)
+                    if not candidate or not _candidate_matches_database(candidate, expected):
+                        continue
+                    matches.append(candidate)
+        except Exception:
+            continue
+
+    if not matches:
+        return ""
+
+    idb_dir = os.path.dirname(current_idb_path() or "")
+    if idb_dir:
+        idb_dir = os.path.normcase(os.path.abspath(idb_dir))
+
+        def sort_key(path):
+            directory = os.path.normcase(os.path.dirname(path))
+            same_dir = 0 if directory == idb_dir else 1
+            return (same_dir, len(path), path)
+
+        matches.sort(key=sort_key)
+    else:
+        matches.sort(key=lambda path: (len(path), path))
+    return matches[0]
+
+
+def input_file_path_raw():
+    """Return the raw path reported by IDA without validating it against the database."""
+    for getter in (
+        lambda: getattr(ida_loader, "get_path", None) and ida_loader.get_path(getattr(ida_loader, "PATH_TYPE_CMD", None)),
+        lambda: getattr(idc, "get_input_file_path", None) and idc.get_input_file_path(),
+        lambda: getattr(ida_nalt, "get_input_file_path", None) and ida_nalt.get_input_file_path(),
+        lambda: getattr(ida_nalt, "dbg_get_input_path", None) and ida_nalt.dbg_get_input_path(),
+    ):
+        try:
+            value = getter()
+        except Exception:
+            value = ""
+        value = _normalize_existing_path(value)
+        if value:
+            return value
+    return ""
+
 
 def input_file_path():
     """Return the input file path of the current IDA database."""
-    getter = getattr(idc, "get_input_file_path", None)
-    if getter is None:
-        return ""
-    try:
-        return getter() or ""
-    except Exception:
-        return ""
+    global _LAST_RESOLVED_INPUT_PATH
+    expected = _database_expected_file_info()
+    raw_candidates = []
+
+    for getter in (
+        lambda: getattr(ida_loader, "get_path", None) and ida_loader.get_path(getattr(ida_loader, "PATH_TYPE_CMD", None)),
+        lambda: getattr(idc, "get_input_file_path", None) and idc.get_input_file_path(),
+        lambda: getattr(ida_nalt, "get_input_file_path", None) and ida_nalt.get_input_file_path(),
+        lambda: getattr(ida_nalt, "dbg_get_input_path", None) and ida_nalt.dbg_get_input_path(),
+    ):
+        try:
+            value = getter()
+        except Exception:
+            value = ""
+        path = _normalize_existing_path(value)
+        if path and path not in raw_candidates:
+            raw_candidates.append(path)
+        if path and _candidate_matches_database(path, expected):
+            _LAST_RESOLVED_INPUT_PATH = path
+            return path
+
+    matched = _search_matching_input_file(expected)
+    if matched:
+        _LAST_RESOLVED_INPUT_PATH = matched
+        return matched
+
+    cached = _normalize_existing_path(_LAST_RESOLVED_INPUT_PATH)
+    if cached:
+        return cached
+
+    if raw_candidates:
+        _LAST_RESOLVED_INPUT_PATH = raw_candidates[0]
+        return raw_candidates[0]
+
+    return ""
 
 
 def current_idb_path():

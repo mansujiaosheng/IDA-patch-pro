@@ -189,6 +189,7 @@
 - 支持仅 IDB 和写回输入文件两种模式
 - 写回输入文件时按格式选择策略：PE/DLL/PYD 走 `.patchf`，ELF/SO 自动扩展最后一个 `PT_LOAD`
 - 实际落盘前重新确认代码洞位置
+- 应用时把代码注入 replay 所需参数一并写入事务元数据，供补丁包导入时复刻原操作
 
 ### `ui/rollback_dialog.py`
 
@@ -409,6 +410,7 @@
 - 事务开始、记录、提交。
 - 捕获 old/new bytes。
 - 保存文件写回前后的 chunk 信息。
+- 对文件写回事务记录 `input_file_before` / `input_file_after`，供补丁包导出时做双 SHA256 校验。
 
 关键函数：
 - `begin_patch_transaction()`
@@ -427,6 +429,23 @@
 - 设置文件和历史文件的 JSON 读写。
 - 快捷键保存和加载。
 - 补丁历史的单条删除、批量删除和清空。
+
+### `patching/package_io.py`
+
+主要职责：
+- 补丁包导出/导入。
+- 导出 active 事务并过滤掉导入产生的递归事务。
+- 记录 `baseline_input_file` / `expected_final_input_file`。
+- 导入时优先重放代码注入类事务的原始操作；旧包再回退到字节级导入。
+
+关键函数：
+- `export_patch_package_via_dialog()`
+- `import_patch_package_via_dialog()`
+- `_verify_input_file_match()`
+- `_import_trampoline_transaction_via_replay()`
+
+说明：
+- 如果问题只出现在“导出后再导入”，先看这里，再看 `transactions.py`。
 
 关键函数：
 - `load_plugin_settings()`
@@ -478,6 +497,20 @@
 - `entry_runtime_status()`
 
 ## `trampoline/`
+
+### `trampoline/apply.py`
+
+主要职责：
+- 代码注入的非 UI 应用主链。
+- 统一执行“准备存储区 -> 写 cave -> 校验 -> 写 entry -> 校验 -> 挂接 tail -> 提交事务”。
+- 供 UI 和补丁包 replay 两条路径复用。
+
+关键函数：
+- `prepare_trampoline_apply_plan()`
+- `apply_trampoline_patch()`
+
+说明：
+- “预览成功但应用后只有入口 jmp” 这类问题，优先从这里查。
 
 ### `trampoline/planner.py`
 

@@ -3,6 +3,7 @@
 import os
 import struct
 
+import ida_bytes
 import ida_diskio
 import ida_loader
 import ida_segment
@@ -15,6 +16,7 @@ from ..ida_adapter import (
     input_file_path,
     is_64bit_database,
     load_pefile_module,
+    read_file_bytes,
     segment_bitness_code,
     segment_name,
 )
@@ -295,7 +297,8 @@ def sync_file_patch_segment_to_idb(info):
     ida_segment.update_segm(seg)
     ida_segment.set_segment_cmt(
         seg,
-        "ida_patch_pro file-backed patch section. 此段已同步到输入文件，可直接运行/调试。",
+        "ida_patch_pro file-backed patch section. 此段已同步到输入文件，可直接运行/调试。 raw_ptr=0x%X"
+        % info["raw_ptr"],
         0,
     )
 
@@ -315,6 +318,19 @@ def sync_file_patch_segment_to_idb(info):
 
     if not ok:
         raise RuntimeError("无法把文件补丁节 `%s` 映射回 IDA 数据库。" % info["section_name"])
+
+    data = read_file_bytes(info["path"], info["raw_ptr"], info["raw_size"])
+    if len(data) != info["raw_size"]:
+        raise RuntimeError("无法读取文件补丁节 `%s` 的原始字节。" % info["section_name"])
+    ida_bytes.patch_bytes(info["ea_start"], data)
+    debug_log(
+        "pe_patch_section.sync",
+        path=info["path"],
+        section=info["section_name"],
+        raw_ptr="0x%X" % info["raw_ptr"],
+        raw_size="0x%X" % info["raw_size"],
+        ea_start="0x%X" % info["ea_start"],
+    )
     return seg
 
 

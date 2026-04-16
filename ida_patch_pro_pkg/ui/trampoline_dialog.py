@@ -1,30 +1,19 @@
 """Trampoline/code-cave dialog."""
 
-import ida_auto
 import ida_kernwin
-import idc
 
 from ..asm.operands import processor_key
 from ..constants import (
     PATCH_FILE_SECTION_NAME,
     PATCH_SEGMENT_NAME,
-    PATCH_STUB_ALIGN,
     PLUGIN_NAME,
 )
 from ..ida_adapter import input_file_path
 from ..logging_utils import debug_log, debug_log_exception, make_trace_id
-from ..patching.bytes_patch import apply_code_patch, build_nop_bytes
-from ..patching.rollback import rollback_partial_transaction
 from ..patching.selection import get_entries_for_range, hook_region, join_entry_asm_lines
-from ..patching.transactions import (
-    begin_patch_transaction,
-    commit_patch_transaction,
-    record_transaction_operation,
-)
-from ..trampoline.caves import ensure_patch_segment, next_patch_cursor
-from ..trampoline.file_storage import file_storage_tooltip_text, prepare_file_trampoline_storage
+from ..trampoline.file_storage import file_storage_tooltip_text
 from ..trampoline.hints import build_trampoline_hint_text
-from ..trampoline.function_attach import attach_cave_to_owner_function
+from ..trampoline.apply import apply_trampoline_patch
 from ..trampoline.planner import preview_trampoline_plan
 from .common import load_qt, show_modeless_dialog
 from .reference_dialogs import RegisterHelpDialog, SyntaxHelpDialog
@@ -325,8 +314,6 @@ class TrampolinePatchDialog:
 
     def _apply_patch(self):
         """Write the trampoline entry and cave code to the database."""
-        transaction = None
-        applied_count = 0
         try:
             self.preview_timer.stop()
             debug_log(
@@ -350,121 +337,37 @@ class TrampolinePatchDialog:
                 if answer != ida_kernwin.ASKBTN_YES:
                     return
 
-            cave_start = plan["cave_start"]
-            cave_end = plan["cave_end"]
-            file_path = ""
-            if plan.get("storage_mode") == "idb":
-                seg = ensure_patch_segment(len(plan["cave_bytes"]) + PATCH_STUB_ALIGN)
-                new_cave_start = next_patch_cursor(seg)
-                if new_cave_start != plan["cave_start"]:
-                    plan = preview_trampoline_plan(
-                        self.start_ea,
-                        self.region_size,
-                        self._current_text(),
-                        self.original_entries,
-                        self.include_original.isChecked(),
-                        write_to_file=self.write_to_file.isChecked(),
-                    )
-                    cave_start = plan["cave_start"]
-                    cave_end = plan["cave_end"]
-            elif plan.get("storage_mode") == "file_section":
-                required_total = (
-                    (plan["cave_start"] - plan.get("alloc_base_ea", plan["cave_start"]))
-                    + len(plan["cave_bytes"])
-                    + PATCH_STUB_ALIGN
-                )
-                file_info = prepare_file_trampoline_storage(
-                    required_total,
-                    preferred_ea=self.start_ea,
-                    apply_changes=True,
-                )
-                new_cave_start = file_info["cave_start"]
-                if new_cave_start != plan["cave_start"]:
-                    plan = preview_trampoline_plan(
-                        self.start_ea,
-                        self.region_size,
-                        self._current_text(),
-                        self.original_entries,
-                        self.include_original.isChecked(),
-                        write_to_file=self.write_to_file.isChecked(),
-                    )
-                    cave_start = plan["cave_start"]
-                    cave_end = plan["cave_end"]
-            elif plan.get("storage_mode") == "file_cave":
-                required_total = len(plan["cave_bytes"]) + PATCH_STUB_ALIGN
-                file_info = prepare_file_trampoline_storage(
-                    required_total,
-                    preferred_ea=self.start_ea,
-                    apply_changes=False,
-                )
-                new_cave_start = file_info["cave_start"]
-                if new_cave_start != plan["cave_start"]:
-                    plan = preview_trampoline_plan(
-                        self.start_ea,
-                        self.region_size,
-                        self._current_text(),
-                        self.original_entries,
-                        self.include_original.isChecked(),
-                        write_to_file=self.write_to_file.isChecked(),
-                    )
-                    cave_start = plan["cave_start"]
-                    cave_end = plan["cave_end"]
-
-            transaction = begin_patch_transaction(
-                "trampoline",
-                "代码注入",
+            result = apply_trampoline_patch(
                 self.start_ea,
+                self.region_size,
+                plan,
                 trace_id=self.trace_id,
-                meta={
-                    "start_ea": self.start_ea,
-                    "region_size": self.region_size,
-                    "write_to_file": self.write_to_file.isChecked(),
-                    "cave_start": cave_start,
-                    "cave_end": cave_end,
-                    "owner_ea": self.start_ea,
-                    "storage_mode": plan.get("storage_mode") or "",
+                plan_builder=self._compute_plan,
+                transaction_meta={
+                    "trampoline_replay": {
+                        "version": 1,
+                        "custom_text": self._current_text(),
+                        "include_original": bool(self.include_original.isChecked()),
+                        "write_to_file": bool(self.write_to_file.isChecked()),
+                        "region_size": self.region_size,
+                        "original_asm_text": self.original_asm_text,
+                        "original_entries": [
+                            {
+                                "ea": int(entry.get("ea") or 0),
+                                "text": entry.get("text") or "",
+                                "asm": entry.get("asm") or "",
+                                "bytes_hex": bytes(entry.get("bytes") or b"").hex(),
+                                "operand_infos": list(entry.get("operand_infos") or []),
+                            }
+                            for entry in (self.original_entries or [])
+                        ],
+                    },
                 },
             )
-            record_transaction_operation(
-                transaction,
-                cave_start,
-                plan["cave_bytes"],
-                write_to_file=self.write_to_file.isChecked(),
-                note="trampoline_cave",
-            )
-            file_path = apply_code_patch(
-                cave_start,
-                plan["cave_bytes"],
-                write_to_file=self.write_to_file.isChecked(),
-            )
-            applied_count = 1
-            idc.set_name(cave_start, "patch_cave_%X" % self.start_ea, idc.SN_NOWARN)
-
-            entry_patch = plan["entry_bytes"]
-            if len(entry_patch) < self.region_size:
-                entry_patch += build_nop_bytes(self.start_ea + len(entry_patch), self.region_size - len(entry_patch))
-            record_transaction_operation(
-                transaction,
-                self.start_ea,
-                entry_patch,
-                write_to_file=self.write_to_file.isChecked(),
-                note="trampoline_entry",
-            )
-            apply_code_patch(
-                self.start_ea,
-                entry_patch,
-                write_to_file=self.write_to_file.isChecked(),
-            )
-            applied_count = 2
-            commit_patch_transaction(transaction)
-            ida_auto.auto_wait()
-            if not attach_cave_to_owner_function(self.start_ea, cave_start, cave_end):
-                debug_log(
-                    "trampoline.attach_tail.failure.post_entry",
-                    owner="0x%X" % self.start_ea,
-                    cave_start="0x%X" % cave_start,
-                    cave_end="0x%X" % cave_end,
-                )
+            plan = result["plan"]
+            cave_start = result["cave_start"]
+            cave_end = result["cave_end"]
+            file_path = result["file_path"]
 
             if self.write_to_file.isChecked():
                 ida_kernwin.msg(
@@ -489,14 +392,6 @@ class TrampolinePatchDialog:
             self.preview_signature = self._current_signature()
             self.dialog.accept()
         except Exception as exc:
-            try:
-                rollback_partial_transaction(transaction, applied_count)
-            except Exception as rollback_exc:
-                debug_log_exception(
-                    "trampoline_dialog.partial_rollback.failure",
-                    rollback_exc,
-                    trace_id=self.trace_id,
-                )
             debug_log_exception(
                 "trampoline_dialog.apply.failure",
                 exc,

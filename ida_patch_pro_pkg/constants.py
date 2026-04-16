@@ -11,6 +11,8 @@ ACTION_FILL_RANGE = "ida_patch_pro:fill_range"
 ACTION_SEARCH = "ida_patch_pro:search"
 ACTION_ROLLBACK = "ida_patch_pro:rollback"
 ACTION_SHORTCUTS = "ida_patch_pro:shortcut_settings"
+ACTION_EXPORT_PACKAGE = "ida_patch_pro:export_package"
+ACTION_IMPORT_PACKAGE = "ida_patch_pro:import_package"
 
 MAIN_MENU_NAME = "ida_patch_pro_menu"
 MAIN_MENU_LABEL = PLUGIN_NAME
@@ -27,9 +29,11 @@ PATCH_STUB_ALIGN = 0x10
 TEST_LOG_FILENAME = "ida_patch_pro.test.log"
 HISTORY_FILENAME = "ida_patch_pro.history.json"
 SETTINGS_FILENAME = "ida_patch_pro.settings.json"
+PATCH_PACKAGE_FILENAME_SUFFIX = ".idppatch.json"
 FILE_CAVE_FILL_BYTES = {0x00, 0x90, 0xCC}
 PE_SECTION_CHARACTERISTICS_RX = 0x60000020
 TRAMPOLINE_ORIG_MARKER_RE = re.compile(r"(?is)^\{\{\s*orig(?:\s*:\s*(all|\d+))?\s*\}\}$")
+
 
 ACTION_SHORTCUT_SPECS = [
     (ACTION_ASSEMBLE, "修改汇编", "Ctrl+Alt+A"),
@@ -38,5 +42,7 @@ ACTION_SHORTCUT_SPECS = [
     (ACTION_FILL_RANGE, "Fill Range", "Ctrl+Alt+F"),
     (ACTION_SEARCH, "汇编搜索", "Ctrl+Alt+S"),
     (ACTION_ROLLBACK, "补丁回撤列表", "Ctrl+Alt+R"),
+    (ACTION_EXPORT_PACKAGE, "导出补丁包", "Ctrl+Alt+E"),
+    (ACTION_IMPORT_PACKAGE, "导入补丁包", "Ctrl+Alt+I"),
     (ACTION_SHORTCUTS, "快捷键设置", ""),
 ]

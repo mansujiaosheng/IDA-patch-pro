@@ -1,5 +1,6 @@
 """Patch transaction capture, persistence, and operation replay helpers."""
 
+import hashlib
 import os
 import time
 
@@ -28,8 +29,66 @@ def resolve_operation_ea(operation, entry_meta=None):
     return rebase_history_ea(operation.get("ea"), int(stored_imagebase or 0))
 
 
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _capture_input_file_baseline():
+    path = input_file_path() or ""
+    if not path or not os.path.isfile(path):
+        return {
+            "path": path,
+            "name": os.path.basename(path) if path else "",
+            "size": None,
+            "sha256": None,
+        }
+
+    return {
+        "path": path,
+        "name": os.path.basename(path),
+        "size": os.path.getsize(path),
+        "sha256": _sha256_file(path),
+    }
+
+
+def _transaction_writes_to_file(transaction):
+    """Return whether one transaction contains file-backed operations."""
+    for operation in transaction.get("ops") or []:
+        if operation.get("write_to_file"):
+            return True
+    return False
+
+
+def _join_old_bytes_from_file_chunks(file_chunks):
+    """Merge contiguous file-chunk baselines into one old-bytes snapshot."""
+    if not file_chunks:
+        return None
+
+    merged = bytearray()
+    expected_offset = None
+    for chunk in file_chunks:
+        offset = int(chunk.get("offset") or 0)
+        old_hex = (chunk.get("old_bytes_hex") or "").strip()
+        if not old_hex:
+            return None
+        data = bytes.fromhex(old_hex)
+        if expected_offset is not None and offset != expected_offset:
+            return None
+        merged.extend(data)
+        expected_offset = offset + len(data)
+    return bytes(merged)
+
+
 def capture_patch_operation(ea, patch_bytes, write_to_file=False, note=""):
     """Capture pre-patch bytes so the operation can later be rolled back."""
+    patch_bytes = bytes(patch_bytes)
     seg = ida_segment.getseg(ea)
     operation = {
         "ea": ea,
@@ -37,17 +96,20 @@ def capture_patch_operation(ea, patch_bytes, write_to_file=False, note=""):
         "segment_name": segment_name(seg),
         "segment_offset": (ea - seg.start_ea) if seg is not None else 0,
         "size": len(patch_bytes),
-        "old_bytes_hex": read_idb_bytes(ea, len(patch_bytes)).hex(),
-        "new_bytes_hex": bytes(patch_bytes).hex(),
+        "old_bytes_hex": "",
+        "new_bytes_hex": patch_bytes.hex(),
         "write_to_file": bool(write_to_file),
         "file_path": "",
         "file_chunks": [],
         "note": note or "",
     }
+
+    old_bytes = read_idb_bytes(ea, len(patch_bytes))
     if write_to_file:
         path = input_file_path()
         if not path or not os.path.isfile(path):
             raise RuntimeError("当前 IDB 没有关联输入文件，无法写回文件。")
+
         file_chunks = []
         for offset, data in build_file_patch_chunks(ea, patch_bytes):
             file_chunks.append(
@@ -59,6 +121,12 @@ def capture_patch_operation(ea, patch_bytes, write_to_file=False, note=""):
             )
         operation["file_path"] = path
         operation["file_chunks"] = file_chunks
+
+        file_old_bytes = _join_old_bytes_from_file_chunks(file_chunks)
+        if file_old_bytes is not None and len(file_old_bytes) == len(patch_bytes):
+            old_bytes = file_old_bytes
+
+    operation["old_bytes_hex"] = old_bytes.hex()
     return operation
 
 
@@ -100,6 +168,11 @@ def begin_patch_transaction(kind, label, target_ea, trace_id="", meta=None):
 
 def record_transaction_operation(transaction, ea, patch_bytes, write_to_file=False, note=""):
     """Append one operation snapshot into a transaction before applying it."""
+    if write_to_file:
+        meta = transaction.setdefault("meta", {})
+        if "input_file_before" not in meta:
+            meta["input_file_before"] = _capture_input_file_baseline()
+
     transaction["ops"].append(
         capture_patch_operation(
             ea,
@@ -114,6 +187,9 @@ def commit_patch_transaction(transaction):
     """Persist a completed patch transaction so it can be rolled back later."""
     if not transaction.get("ops"):
         return
+    meta = transaction.setdefault("meta", {})
+    if _transaction_writes_to_file(transaction) and "input_file_after" not in meta:
+        meta["input_file_after"] = _capture_input_file_baseline()
     entries = load_patch_history()
     entries.append(transaction)
     save_patch_history(entries)
