@@ -5,6 +5,7 @@ import re
 PLUGIN_NAME = "ida_patch_pro"
 
 ACTION_ASSEMBLE = "ida_patch_pro:assemble"
+ACTION_STRING = "ida_patch_pro:string"
 ACTION_NOP = "ida_patch_pro:nop"
 ACTION_TRAMPOLINE = "ida_patch_pro:trampoline"
 ACTION_FILL_RANGE = "ida_patch_pro:fill_range"
@@ -37,6 +38,7 @@ TRAMPOLINE_ORIG_MARKER_RE = re.compile(r"(?is)^\{\{\s*orig(?:\s*:\s*(all|\d+))?\
 
 ACTION_SHORTCUT_SPECS = [
     (ACTION_ASSEMBLE, "修改汇编", "Ctrl+Alt+A"),
+    (ACTION_STRING, "修改字符串", "Ctrl+Alt+G"),
     (ACTION_TRAMPOLINE, "代码注入", "Ctrl+Alt+T"),
     (ACTION_NOP, "NOP", "Ctrl+Alt+N"),
     (ACTION_FILL_RANGE, "Fill Range", "Ctrl+Alt+F"),

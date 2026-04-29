@@ -138,6 +138,7 @@ def _normalize_export_op(entry, op):
     old_hex = (op.get("old_bytes_hex") or "").lower()
     new_hex = (op.get("new_bytes_hex") or "").lower()
     note = op.get("note") or ""
+    patch_mode = op.get("patch_mode") or "code"
 
     if ea is None:
         raise RuntimeError("发现无法解析 EA 的补丁操作。")
@@ -167,6 +168,7 @@ def _normalize_export_op(entry, op):
         "old_bytes_hex": old_hex,
         "new_bytes_hex": new_hex,
         "note": note,
+        "patch_mode": patch_mode,
         "write_to_file": bool(op.get("write_to_file")),
         "file_path": op.get("file_path") or "",
         "file_chunks": exported_chunks,
@@ -601,6 +603,7 @@ def _import_one_transaction(pkg, tx):
             target_ea = _package_target_ea(op.get("ea"), package_imagebase)
             old_bytes = bytes.fromhex((op.get("old_bytes_hex") or "").strip())
             new_bytes = bytes.fromhex((op.get("new_bytes_hex") or "").strip())
+            patch_mode = op.get("patch_mode") or "code"
 
             if len(old_bytes) != int(op.get("size") or 0):
                 raise RuntimeError(
@@ -649,6 +652,7 @@ def _import_one_transaction(pkg, tx):
                         new_bytes,
                         write_to_file=True,
                         note="import_package:%s" % (op.get("note") or ""),
+                        patch_mode=patch_mode,
                     )
 
                     for chunk in file_chunks:
@@ -684,6 +688,7 @@ def _import_one_transaction(pkg, tx):
                     new_bytes,
                     write_to_file=False,
                     note="import_package:%s" % (op.get("note") or ""),
+                    patch_mode=patch_mode,
                 )
                 _patch_idb_bytes(target_ea, new_bytes)
                 applied_count += 1
@@ -696,6 +701,7 @@ def _import_one_transaction(pkg, tx):
                     new_bytes,
                     write_to_file=False,
                     note="import_package_legacy_file_backed:%s" % (op.get("note") or ""),
+                    patch_mode=patch_mode,
                 )
                 _patch_idb_bytes(target_ea, new_bytes)
                 applied_count += 1

@@ -15,7 +15,7 @@
 - `ui/`
   负责各个窗口和用户交互。
 - `asm/`
-  负责汇编文本解析、兼容改写、汇编兜底、汇编搜索、右侧提示。
+  负责汇编文本解析、兼容改写、汇编兜底、汇编搜索、提示。
 - `patching/`
   负责选区、范围规划、普通补丁写入、Fill Range、事务、历史、回撤。
 - `trampoline/`
@@ -69,6 +69,7 @@
 
 关键类：
 - `AssembleActionHandler`
+- `StringActionHandler`
 - `TrampolineActionHandler`
 - `NopActionHandler`
 - `FillRangeActionHandler`
@@ -155,28 +156,55 @@
 - `load_qt()`
 - `show_modeless_dialog()`
 
+### `ui/patch_table.py`
+
+主要职责：
+- 创建 `Address / Bytes / Assembly` 三列表格。
+- 统一普通汇编和代码注入窗口的表格字体、列宽、高亮和只读行为。
+- 让 `Assembly` 列可编辑，支持插入行、删除行和收集当前汇编文本。
+
+关键函数：
+- `create_patch_table()`
+- `set_patch_table_rows()`
+
 ### `ui/assemble_dialog.py`
 
 主要职责：
 - 普通“修改汇编”窗口。
-- 管理编辑、预览、应用、长度检查、右侧提示区。
+- 管理编辑、预览、应用、长度检查和表格式机器码/提示视图。
 
 关键类：
 - `AssemblePatchDialog`
 
 这个文件里最重要的行为：
 - 打开时读取当前选区原始汇编
-- 手动/实时预览机器码
+- 表格按 `Address` / `Bytes` / `Assembly` 展示原指令和预览结果
+- `Assembly` / `Bytes` 列可直接编辑；点击按钮时预览机器码
+- `Bytes` 列反汇编回 `Assembly` 走可选 Capstone；缺少 Capstone 时仍可按 raw bytes 写入
+- `Enter` / `Space` / `Insert` 插入行会追加到表格末尾，并读取上一行下一地址的原始机器码和汇编
+- 插入/删除行只标记为待预览，避免每次结构变化都重新汇编
+- 右侧可折叠提示面板展示完整长度提示、兼容说明和模板建议
 - 单条指令场景按完整指令边界扩展补丁范围
 - 汇编超长时按本地策略决定“继续覆盖 / 改用代码注入 / 每次询问”
 - 应用补丁事务
 - 需要时自动补 NOP
 
+### `ui/string_dialog.py`
+
+主要职责：
+- “修改字符串”窗口。
+- 把用户输入文本按指定编码转换成数据字节写入。
+- 选中范围时限制写入大小，并可用 `00` 补齐剩余空间。
+- 应用后可让 IDA 把起始位置重新定义为 C 字符串。
+
+关键类：
+- `StringPatchDialog`
+
 ### `ui/trampoline_dialog.py`
 
 主要职责：
 - “代码注入 / trampoline”窗口。
-- 管理代码洞主体编辑、预览、风险确认、实际应用。
+- 管理代码洞主体编辑、表格预览、风险确认、实际应用。
 
 关键类：
 - `TrampolinePatchDialog`
@@ -184,7 +212,11 @@
 这个文件里最重要的行为：
 - 默认载入当前选中的原始汇编
 - 支持 `include_original`
-- 支持实时预览代码洞逐行机器码
+- 表格按 `Address` / `Bytes` / `Assembly` 编辑代码洞主体
+- 点击按钮时预览入口跳板和代码洞逐行机器码
+- `Enter` / `Space` / `Insert` 插入 `nop` 占位行
+- 插入/删除行只标记为待预览，避免每次结构变化都重新汇编
+- 右侧可折叠提示面板展示入口跳板、代码洞和风险提示
 - 支持直接打开语法帮助表和寄存器帮助表
 - 支持仅 IDB 和写回输入文件两种模式
 - 写回输入文件时按格式选择策略：PE/DLL/PYD 走 `.patchf`，ELF/SO 自动扩展最后一个 `PT_LOAD`
@@ -336,7 +368,7 @@
 ### `asm/hints.py`
 
 主要职责：
-- 右侧提示区文案。
+- 右侧提示面板和参考文本使用的提示文案。
 - 指令说明、模板建议、长度提示。
 
 关键函数：
@@ -386,13 +418,16 @@
 
 主要职责：
 - 实际改字节。
-- 自动重建代码。
+- 按代码或数据两种模式写入。
+- 代码模式自动重建指令，数据模式可重新定义字符串。
 - 普通补丁和 NOP 写入。
 
 关键函数：
 - `build_nop_bytes()`
 - `patch_bytes_as_code()`
 - `apply_code_patch()`
+- `patch_bytes_as_data()`
+- `apply_data_patch()`
 
 ### `patching/fill.py`
 
@@ -533,7 +568,8 @@
 ### `trampoline/hints.py`
 
 主要职责：
-- 生成代码注入窗口右侧的说明、机器码预览和高级语法例子。
+- 生成代码注入说明、机器码预览和高级语法例子文本。
+- 当前主窗口的表格视图主要在 `ui/trampoline_dialog.py` 中生成。
 
 关键函数：
 - `build_trampoline_hint_text()`
@@ -650,10 +686,12 @@
   `plugin.py`、`actions.py`、`ui/shortcut_dialog.py`
 - 普通汇编改写/汇编失败：
   `asm/assemble.py`、`asm/rewrite.py`、`asm/operands.py`
-- 右侧提示区文案：
-  `asm/hints.py`、`data.py`
+- 提示面板文案：
+  `asm/hints.py`、`data.py`、`ui/assemble_dialog.py`、`ui/trampoline_dialog.py`
 - 普通补丁写入/NOP/事务：
   `patching/bytes_patch.py`、`patching/transactions.py`
+- 字符串写入：
+  `ui/string_dialog.py`、`patching/bytes_patch.py`、`patching/transactions.py`
 - 回撤列表和回撤异常：
   `patching/rollback.py`、`ui/rollback_dialog.py`
 - 代码注入预览和风险提示：

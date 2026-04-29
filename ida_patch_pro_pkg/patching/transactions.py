@@ -17,7 +17,7 @@ from ..ida_adapter import (
     transaction_imagebase,
 )
 from ..logging_utils import debug_log, make_trace_id
-from .bytes_patch import patch_bytes_as_code
+from .bytes_patch import patch_bytes_as_code, patch_bytes_as_data
 from .history_store import load_patch_history, save_patch_history
 
 
@@ -86,7 +86,7 @@ def _join_old_bytes_from_file_chunks(file_chunks):
     return bytes(merged)
 
 
-def capture_patch_operation(ea, patch_bytes, write_to_file=False, note=""):
+def capture_patch_operation(ea, patch_bytes, write_to_file=False, note="", patch_mode="code"):
     """Capture pre-patch bytes so the operation can later be rolled back."""
     patch_bytes = bytes(patch_bytes)
     seg = ida_segment.getseg(ea)
@@ -102,6 +102,7 @@ def capture_patch_operation(ea, patch_bytes, write_to_file=False, note=""):
         "file_path": "",
         "file_chunks": [],
         "note": note or "",
+        "patch_mode": patch_mode or "code",
     }
 
     old_bytes = read_idb_bytes(ea, len(patch_bytes))
@@ -147,7 +148,10 @@ def apply_operation_bytes(operation, revert=False):
                 )
                 fh.seek(chunk["offset"])
                 fh.write(chunk_bytes)
-    patch_bytes_as_code(current_ea, patch_bytes)
+    if (operation.get("patch_mode") or "code") == "data":
+        patch_bytes_as_data(current_ea, patch_bytes)
+    else:
+        patch_bytes_as_code(current_ea, patch_bytes)
 
 
 def begin_patch_transaction(kind, label, target_ea, trace_id="", meta=None):
@@ -166,7 +170,14 @@ def begin_patch_transaction(kind, label, target_ea, trace_id="", meta=None):
     }
 
 
-def record_transaction_operation(transaction, ea, patch_bytes, write_to_file=False, note=""):
+def record_transaction_operation(
+    transaction,
+    ea,
+    patch_bytes,
+    write_to_file=False,
+    note="",
+    patch_mode="code",
+):
     """Append one operation snapshot into a transaction before applying it."""
     if write_to_file:
         meta = transaction.setdefault("meta", {})
@@ -179,6 +190,7 @@ def record_transaction_operation(transaction, ea, patch_bytes, write_to_file=Fal
             patch_bytes,
             write_to_file=write_to_file,
             note=note,
+            patch_mode=patch_mode,
         )
     )
 

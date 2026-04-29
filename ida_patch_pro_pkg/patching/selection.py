@@ -3,10 +3,10 @@
 import ida_bytes
 import ida_idaapi
 import ida_kernwin
-import idautils
 import idc
 
 from ..asm.operands import build_operand_infos, sanitize_asm_line
+from ..logging_utils import debug_log
 
 
 def current_ea(ctx):
@@ -22,16 +22,51 @@ def selected_items(ctx):
     widget = getattr(ctx, "widget", None)
     has_selection, start_ea, end_ea = ida_kernwin.read_range_selection(widget)
     if has_selection and start_ea != ida_idaapi.BADADDR and end_ea > start_ea:
-        heads = list(idautils.Heads(start_ea, end_ea))
-        if heads:
-            return [(ea, ida_bytes.get_item_size(ea)) for ea in heads]
-        return [(start_ea, end_ea - start_ea)]
+        items = items_for_range(start_ea, end_ea)
+        debug_log(
+            "selection.items",
+            start_ea="0x%X" % start_ea,
+            end_ea="0x%X" % end_ea,
+            item_count=len(items),
+        )
+        return items
 
     ea = current_ea(ctx)
     size = ida_bytes.get_item_size(ea)
     if size <= 0:
         size = 1
     return [(ea, size)]
+
+
+def items_for_range(start_ea, end_ea):
+    """Expand a selected range into code instructions and byte-sized data rows."""
+    items = []
+    current = start_ea
+    while current < end_ea:
+        flags = ida_bytes.get_flags(current)
+        item_size = ida_bytes.get_item_size(current)
+        if item_size <= 0:
+            item_size = 1
+
+        if ida_bytes.is_code(flags):
+            size = min(item_size, end_ea - current)
+            items.append((current, size))
+            current += max(size, 1)
+        else:
+            items.append((current, 1))
+            current += 1
+    return items
+
+
+def display_item_for_ea(ea):
+    """Return a display-sized item at EA: instructions as-is, data byte-sized."""
+    flags = ida_bytes.get_flags(ea)
+    item_size = ida_bytes.get_item_size(ea)
+    if item_size <= 0:
+        item_size = 1
+    if ida_bytes.is_code(flags):
+        return ea, item_size
+    return ea, 1
 
 
 def patch_region(ctx):
@@ -70,38 +105,57 @@ def hook_region(ctx, min_size=5):
     return start_ea, region_size, "自动扩展当前地址 0x%X 起的 %d bytes" % (start_ea, region_size), False
 
 
-def get_original_instruction_text(ea):
+def _format_db_text(value):
+    if value == 0:
+        return "db    0"
+    if value < 10:
+        return "db    %d" % value
+    return "db    0%Xh" % value
+
+
+def get_original_instruction_text(ea, size=None):
     """Return the current disassembly line for an instruction or data item."""
+    flags = ida_bytes.get_flags(ea)
+    item_size = ida_bytes.get_item_size(ea)
+    if size == 1 and not ida_bytes.is_code(flags) and item_size != 1:
+        return _format_db_text(ida_bytes.get_byte(ea))
     return (idc.GetDisasm(ea) or "").strip()
 
 
-def get_original_instruction_bytes(ea):
+def get_original_instruction_bytes(ea, size=None):
     """Read the original instruction bytes from the database."""
-    size = ida_bytes.get_item_size(ea)
+    if size is None:
+        size = ida_bytes.get_item_size(ea)
     if size <= 0:
         return b""
     buf = ida_bytes.get_bytes(ea, size)
     return bytes(buf) if buf else b""
 
 
-def build_entry_for_ea(ea, log_events=True):
+def build_entry_for_ea(ea, size=None, log_events=True):
     """Build one entry dictionary for the item that starts at `ea`."""
-    text = get_original_instruction_text(ea)
+    text = get_original_instruction_text(ea, size=size)
     asm = sanitize_asm_line(text)
     return {
         "ea": ea,
         "text": text,
         "asm": asm,
-        "bytes": get_original_instruction_bytes(ea),
+        "bytes": get_original_instruction_bytes(ea, size=size),
         "operand_infos": build_operand_infos(ea, asm, log_events=log_events),
     }
+
+
+def build_display_entry_for_ea(ea, log_events=True):
+    """Build a table entry for the item that should be displayed at EA."""
+    item_ea, size = display_item_for_ea(ea)
+    return build_entry_for_ea(item_ea, size=size, log_events=log_events)
 
 
 def get_original_entries(ctx, log_events=True):
     """Build metadata for each selected instruction line."""
     entries = []
-    for ea, _ in selected_items(ctx):
-        entries.append(build_entry_for_ea(ea, log_events=log_events))
+    for ea, size in selected_items(ctx):
+        entries.append(build_entry_for_ea(ea, size=size, log_events=log_events))
     return entries
 
 

@@ -1,7 +1,7 @@
 # ida_patch_pro
 目前只测试了9.2pro版本
 
-`ida_patch_pro` 是一个给 IDA Pro 使用的汇编补丁插件。它会在反汇编窗口的右键菜单里增加 `修改汇编`、`代码注入`、`NOP`、`Fill Range`、`汇编搜索` 和 `补丁回撤列表` 等功能，并提供更适合实际补丁工作的增强界面。
+`ida_patch_pro` 是一个给 IDA Pro 使用的汇编补丁插件。它会在反汇编窗口的右键菜单里增加 `修改汇编`、`修改字符串`、`代码注入`、`NOP`、`Fill Range`、`汇编搜索` 和 `补丁回撤列表` 等功能，并提供更适合实际补丁工作的增强界面。
 
 插件当前主要解决这几类问题：
 
@@ -18,6 +18,7 @@
 ## 功能
 
 - 右键菜单新增 `修改汇编`
+- 右键菜单新增 `修改字符串`
 - 右键菜单新增 `代码注入`
 - 右键菜单新增 `NOP`
 - 右键菜单新增 `Fill Range`
@@ -57,6 +58,8 @@
 - 支持按列表选择任意一条插件补丁事务回撤
 - 支持在补丁回撤列表中批量勾选删除历史记录
 - 支持给插件动作设置并保存自定义快捷键
+- 支持 `修改汇编` / `代码注入` 使用 IDA-View 风格的 Address / Bytes / Assembly 表格编辑
+- 支持把文本按 `utf-8` / `gbk` / `ascii` 编码写入为数据字符串，并可选追加 `\0`
 - 支持普通汇编在超长时提示“继续覆盖 / 改用代码注入”，并记住策略
 
 ## 截图
@@ -66,7 +69,7 @@
 ![Right Click Menu](docs/images/context-menu.png)
 
 
-### 2. Assemble 主界面
+### 2. Patching 主界面
 
 ![Assemble Dialog](docs/images/assemble-dialog.png)
 
@@ -105,7 +108,7 @@
 - [ida_patch_pro_pkg/plugin.py](./ida_patch_pro_pkg/plugin.py)：`PLUGIN_ENTRY`、`plugin_t` 生命周期、插件加载/卸载入口。
 - [ida_patch_pro_pkg/actions.py](./ida_patch_pro_pkg/actions.py)：右键菜单、顶部菜单、action handler、动作注册。
 - [ida_patch_pro_pkg/ui](./ida_patch_pro_pkg/ui)：各个非模态窗口，分别负责普通汇编修改、代码注入、Fill Range、汇编搜索、回撤列表、快捷键设置和参考表。
-- [ida_patch_pro_pkg/asm](./ida_patch_pro_pkg/asm)：汇编文本解析、符号兼容改写、Keystone 兜底、汇编搜索、右侧提示和模板建议。
+- [ida_patch_pro_pkg/asm](./ida_patch_pro_pkg/asm)：汇编文本解析、符号兼容改写、Keystone 兜底、汇编搜索、提示和模板建议。
 - [ida_patch_pro_pkg/patching](./ida_patch_pro_pkg/patching)：选区获取、范围规划、普通补丁写入、Fill Range、事务记录、历史保存、补丁回撤。
 - [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline)：代码洞分配、trampoline 规划、风险提示、函数尾块挂接，以及代码注入应用主链。
 - [ida_patch_pro_pkg/backends](./ida_patch_pro_pkg/backends)：输入文件写回、PE `.patchf` 节管理、EA 与文件偏移映射。
@@ -132,7 +135,7 @@
 6. [ida_patch_pro_pkg/trampoline](./ida_patch_pro_pkg/trampoline) + [ida_patch_pro_pkg/backends](./ida_patch_pro_pkg/backends)
    只在你要继续改 code cave、`.patch` / `.patchf`、文件写回时再深入。
 7. [ida_patch_pro_pkg/data.py](./ida_patch_pro_pkg/data.py)
-   只在你要改右侧提示、语法帮助、寄存器帮助时再看。
+   只在你要改提示、语法帮助、寄存器帮助时再看。
 
 更细的文件职责和关键函数见 [ida_patch_pro_pkg/README.md](./ida_patch_pro_pkg/README.md)。
 
@@ -149,7 +152,7 @@
    - [ida_patch_pro.py](./ida_patch_pro.py)
    - 整个 [ida_patch_pro_pkg](./ida_patch_pro_pkg) 文件夹
 2. 重启 IDA。
-3. 在反汇编窗口右键，即可看到 `修改汇编`、`代码注入`、`NOP`、`Fill Range`、`汇编搜索`、`补丁回撤列表` 和 `快捷键设置`。
+3. 在反汇编窗口右键，即可看到 `修改汇编`、`修改字符串`、`代码注入`、`NOP`、`Fill Range`、`汇编搜索`、`补丁回撤列表` 和 `快捷键设置`。
 
 典型路径示例：
 
@@ -164,10 +167,20 @@ D:\TOOL\ida_9.2\plugins\ida_patch_pro.py
 
 1. 在 IDA 反汇编窗口选中一条或多条指令。
 2. 右键点击 `修改汇编`。
-3. 在弹出的 `Assemble` 窗口中修改汇编文本。
-4. 可以直接看实时机器码预览，也可以手动点击 `预览机器码`。
+3. 在弹出的 `Patching` 窗口中修改汇编文本。
+4. 在表格的 `Assembly` 列直接修改原始汇编，或在 `Bytes` 列直接修改机器码；点击 `预览机器码` 刷新结果。
+   - `Bytes` 列反汇编回 `Assembly` 依赖当前 IDA Python 环境可导入 `capstone`；没有 Capstone 时仍可校验并按 raw bytes 写入。
+   - `Enter` / `Space` / `Insert` 或 `插入行` 会追加到表格末尾，并读取上一行下一地址的原始机器码和汇编。
 5. 如果新汇编超过原范围，可按顶部 `超长时` 策略决定是每次询问、直接继续覆盖，还是直接改用代码注入。
 6. 点击 `应用` 写入补丁。
+
+### 修改字符串
+
+1. 在 IDA 反汇编窗口选中一个字符串或数据范围。
+2. 右键点击 `修改字符串`。
+3. 输入新字符串，例如 `ni hao`，选择编码和是否追加 `\0`。
+4. 选中范围时默认限制写入大小，并用 `00` 补齐剩余空间。
+5. 点击 `预览字符串` 检查新旧字节，或直接点击 `应用` 写入。
 
 ### NOP
 
@@ -179,13 +192,13 @@ D:\TOOL\ida_9.2\plugins\ida_patch_pro.py
 
 1. 在反汇编窗口选中一条或多条要被 trampoline 覆盖的指令。
 2. 右键点击 `代码注入`。
-3. 编辑框会默认载入当前所选汇编，你可以直接改、删、插、重排。
-4. 顶部 `实时预览` 会在输入停顿后自动刷新入口跳板、代码洞和逐行机器码。
+3. 表格会默认载入当前所选汇编，你可以直接改、删、插、重排。
+4. 插入/删除/编辑行只标记为待预览；点击 `预览代码注入` 后刷新入口跳板、代码洞和逐行机器码。
 5. 需要真实运行/调试时，勾选 `同时写入输入文件`。
    - PE / DLL / PYD：会自动创建或扩展 `.patchf` 作为文件内代码洞。
    - ELF / SO：会自动把 `.patchf` 追加到文件尾，并扩展最后一个 `PT_LOAD` 覆盖这段代码，避免破坏现有 ELF 头/节表布局。
 6. 顶部 `语法` / `寄存器` 按钮可直接打开手册，方便边写边查。
-7. 高级用法可在编辑框中写 `{{orig}}` 或 `{{orig:N}}`，把被覆盖的原始指令插回指定位置。
+7. 高级用法可在 `Assembly` 列中写 `{{orig}}` 或 `{{orig:N}}`，把被覆盖的原始指令插回指定位置。
 8. 点击 `预览代码注入` 或 `应用`。
 
 补充说明：
@@ -250,6 +263,7 @@ D:\TOOL\ida_9.2\plugins\ida_patch_pro.py
 当前默认快捷键：
 
 - `修改汇编`：`Ctrl+Alt+A`
+- `修改字符串`：`Ctrl+Alt+G`
 - `代码注入`：`Ctrl+Alt+T`
 - `NOP`：`Ctrl+Alt+N`
 - `Fill Range`：`Ctrl+Alt+F`
@@ -258,23 +272,22 @@ D:\TOOL\ida_9.2\plugins\ida_patch_pro.py
 
 ## 界面说明
 
-`Assemble` 窗口主要分成两部分：
+`Patching` / `代码注入` 窗口主体是一个类似 IDA-View 的可编辑表格：
 
-- 左侧：汇编编辑区
-- 右侧：上下文提示区
+- `Address`：当前补丁起始地址
+- `Bytes`：当前原始或预览出的机器码；普通 `修改汇编` 窗口中可直接编辑
+- `Assembly`：要写入或注入的汇编，可直接编辑
 
-右侧提示区会展示：
+右侧是可折叠的大提示面板，会展示：
 
 - 原指令
 - 原机器码
 - 当前编辑内容
 - 新机器码预览
-- 兼容说明
-- 指令说明
-- 寄存器提示
-- 模板建议
+- 代码注入入口跳板和代码洞逐行机器码
+- 兼容说明、长度提示、风险提示和模板建议
 
-顶部 `实时预览` 可控制是否在停止输入片刻后自动刷新机器码预览。
+预览不会在每次输入字符时触发；编辑提交后点击预览按钮才会重新汇编。`Enter` / `Space` / `Insert` 用于插入行。
 
 顶部 `语法` 按钮可打开当前架构的常见汇编语法帮助表。
 
@@ -332,5 +345,5 @@ mov dword ptr [rsp+198h+var_158], 1
 
 - 修改汇编前建议先备份数据库
 - 新机器码长度变长时，可能覆盖后续指令
-- 某些向量指令不能直接写立即数，右侧模板建议会给出替代写法
+- 某些向量指令不能直接写立即数，右侧提示面板会给出替代写法
 - 如果你修改的是选中范围，写入长度不能超过该选区

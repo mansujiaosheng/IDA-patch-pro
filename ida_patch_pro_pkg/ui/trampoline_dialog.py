@@ -2,20 +2,25 @@
 
 import ida_kernwin
 
-from ..asm.operands import processor_key
-from ..constants import (
-    PATCH_FILE_SECTION_NAME,
-    PATCH_SEGMENT_NAME,
-    PLUGIN_NAME,
-)
+from ..asm.operands import processor_key, sanitize_asm_line
+from ..constants import PLUGIN_NAME
 from ..ida_adapter import input_file_path
-from ..logging_utils import debug_log, debug_log_exception, make_trace_id
+from ..logging_utils import debug_log, debug_log_exception, format_bytes_hex, make_trace_id
 from ..patching.selection import get_entries_for_range, hook_region, join_entry_asm_lines
 from ..trampoline.file_storage import file_storage_tooltip_text
 from ..trampoline.hints import build_trampoline_hint_text
 from ..trampoline.apply import apply_trampoline_patch
 from ..trampoline.planner import preview_trampoline_plan
 from .common import load_qt, show_modeless_dialog
+from .patch_table import (
+    COL_ASSEMBLY,
+    create_patch_table,
+    insert_patch_row,
+    install_patch_table_key_filter,
+    patch_table_assembly_text,
+    remove_selected_patch_rows,
+    set_patch_table_rows,
+)
 from .reference_dialogs import RegisterHelpDialog, SyntaxHelpDialog
 
 
@@ -45,53 +50,44 @@ class TrampolinePatchDialog:
         self.preview_signature = None
 
         self.dialog = QtWidgets.QDialog()
-        self.dialog.setWindowTitle("代码注入 / Trampoline")
-        self.dialog.resize(1120, 540)
+        self.dialog.setWindowTitle("代码注入 / Patching")
+        self.dialog.resize(1220, 600)
 
         root = QtWidgets.QVBoxLayout(self.dialog)
-        target = QtWidgets.QLabel(
-            "目标: %s | 覆盖大小: %d bytes" % (self.region_desc, self.region_size),
-            self.dialog,
-        )
-        root.addWidget(target)
-
-        note = QtWidgets.QLabel(
-            "说明: 原地址会写入 `jmp` 跳板，再在代码洞里执行你的自定义代码。"
-            " 不勾选“同时写入输入文件”时，代码洞只存在于 IDB 的 `%s` 段；"
-            " 勾选后会按当前文件格式自动选择写回策略：PE/DLL/PYD 会创建或扩展 `%s`，"
-            " ELF/SO 会自动扩展最后一个 PT_LOAD 来承载 `%s`，适合实际运行和调试。"
-            " 高级用法可在编辑框中使用 `{{orig}}` / `{{orig:N}}`。"
-            % (PATCH_SEGMENT_NAME, PATCH_FILE_SECTION_NAME, PATCH_FILE_SECTION_NAME),
-            self.dialog,
-        )
-        note.setWordWrap(True)
-        root.addWidget(note)
-
-        body = QtWidgets.QHBoxLayout()
-        self.editor = QtWidgets.QPlainTextEdit(self.dialog)
-        self.editor.setPlaceholderText(
-            "例如:\ncall my_hook\n{{orig}}\n\n或:\npush rax\nmov eax, 1234h\npop rax"
-        )
         font = QtGui.QFont("Consolas")
         font.setStyleHint(QtGui.QFont.Monospace)
-        self.editor.setFont(font)
-        body.addWidget(self.editor, 3)
+
+        self.splitter = QtWidgets.QSplitter(self.dialog)
+        self.splitter.setOrientation(_QtCore.Qt.Horizontal)
+        self.patch_table = create_patch_table(self.dialog, font, editable_bytes=False)
+        install_patch_table_key_filter(
+            self.patch_table,
+            on_enter=self._insert_row,
+            on_delete=self._delete_selected_rows,
+            on_space=self._insert_row,
+        )
+        self.patch_table.itemChanged.connect(self._on_table_item_changed)
+        self.splitter.addWidget(self.patch_table)
 
         self.hint_panel = QtWidgets.QPlainTextEdit(self.dialog)
         self.hint_panel.setReadOnly(True)
         self.hint_panel.setFont(font)
-        body.addWidget(self.hint_panel, 2)
-        root.addLayout(body)
+        self.splitter.addWidget(self.hint_panel)
+        self.splitter.setStretchFactor(0, 4)
+        self.splitter.setStretchFactor(1, 2)
+        root.addWidget(self.splitter, 1)
 
         toolbar = QtWidgets.QHBoxLayout()
         self.status = QtWidgets.QLabel("当前未预览代码洞。", self.dialog)
         toolbar.addWidget(self.status, 1)
 
-        self.live_preview = QtWidgets.QCheckBox("实时预览", self.dialog)
-        self.live_preview.setChecked(True)
-        self.live_preview.setToolTip("勾选后会在停止输入片刻后自动刷新代码洞机器码预览。")
-        self.live_preview.stateChanged.connect(self._on_live_preview_toggled)
-        toolbar.addWidget(self.live_preview)
+        self.insert_row_btn = QtWidgets.QPushButton("插入行", self.dialog)
+        self.insert_row_btn.clicked.connect(self._insert_row)
+        toolbar.addWidget(self.insert_row_btn)
+
+        self.delete_row_btn = QtWidgets.QPushButton("删除行", self.dialog)
+        self.delete_row_btn.clicked.connect(self._delete_selected_rows)
+        toolbar.addWidget(self.delete_row_btn)
 
         self.include_original = QtWidgets.QCheckBox("末尾自动补齐未保留的原指令并跳回", self.dialog)
         self.include_original.setChecked(bool(initial_include_original))
@@ -99,7 +95,7 @@ class TrampolinePatchDialog:
         toolbar.addWidget(self.include_original)
 
         self.load_original_btn = QtWidgets.QPushButton("载入原指令", self.dialog)
-        self.load_original_btn.clicked.connect(self._load_original_into_editor)
+        self.load_original_btn.clicked.connect(self._load_original_into_table)
         toolbar.addWidget(self.load_original_btn)
 
         self.write_to_file = QtWidgets.QCheckBox("同时写入输入文件", self.dialog)
@@ -122,6 +118,10 @@ class TrampolinePatchDialog:
         self.register_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.register_btn.setMenu(self._build_register_menu())
         toolbar.addWidget(self.register_btn)
+
+        self.toggle_hint_btn = QtWidgets.QPushButton("隐藏提示", self.dialog)
+        self.toggle_hint_btn.clicked.connect(self._toggle_hint_panel)
+        toolbar.addWidget(self.toggle_hint_btn)
         root.addLayout(toolbar)
 
         buttons = QtWidgets.QDialogButtonBox(self.dialog)
@@ -131,13 +131,9 @@ class TrampolinePatchDialog:
         self.cancel_btn.clicked.connect(self.dialog.reject)
         root.addWidget(buttons)
 
-        self.editor.setPlainText(initial_text if initial_text is not None else self.original_asm_text)
-        self.status.setText("已载入当前所选汇编。可直接在编辑框中自由修改。")
-        self.preview_timer = _QtCore.QTimer(self.dialog)
-        self.preview_timer.setSingleShot(True)
-        self.preview_timer.setInterval(320)
-        self.preview_timer.timeout.connect(self._run_live_preview)
-        self.editor.textChanged.connect(self._on_text_changed)
+        initial_table_text = initial_text if initial_text is not None else self.original_asm_text
+        set_patch_table_rows(self.patch_table, self._build_body_rows(initial_table_text, None))
+        self.status.setText("已载入当前所选汇编。按 Enter/Space/Insert 插入 NOP 行，点击“预览代码注入”刷新。")
         self._refresh_context_panel()
         debug_log(
             "trampoline_dialog.open",
@@ -186,8 +182,8 @@ class TrampolinePatchDialog:
         RegisterHelpDialog(category, self.dialog).exec()
 
     def _current_text(self):
-        """Return the current editor text."""
-        return self.editor.toPlainText().strip()
+        """Return the current custom code text from the editable table."""
+        return patch_table_assembly_text(self.patch_table)
 
     def _current_signature(self):
         """Return the current preview-relevant input signature."""
@@ -197,50 +193,115 @@ class TrampolinePatchDialog:
             bool(self.write_to_file.isChecked()),
         )
 
-    def _load_original_into_editor(self):
-        """Reload the currently selected original instructions into the editor."""
+    def _insert_row(self):
+        """Insert one editable code-cave row."""
+        insert_patch_row(self.patch_table, assembly="nop")
+        debug_log(
+            "trampoline_dialog.insert_row",
+            trace_id=self.trace_id,
+            row=self.patch_table.currentRow(),
+        )
+        self._mark_preview_stale(refresh_context=False, refresh_hint=False)
+        return True
+
+    def _delete_selected_rows(self):
+        """Delete selected table rows and mark preview as stale."""
+        if remove_selected_patch_rows(self.patch_table):
+            self._on_table_structure_changed()
+            return True
+        return False
+
+    def _on_table_structure_changed(self):
+        """Mark preview stale after rows were inserted or removed."""
+        self._mark_preview_stale(refresh_context=False, refresh_hint=False)
+
+    def _toggle_hint_panel(self):
+        """Collapse or restore the right-side hint panel."""
+        visible = self.hint_panel.isVisible()
+        self.hint_panel.setVisible(not visible)
+        self.toggle_hint_btn.setText("显示提示" if visible else "隐藏提示")
+
+    def _on_table_item_changed(self, item):
+        """Mark preview stale after an assembly cell edit is committed."""
+        if item is None or item.column() != COL_ASSEMBLY:
+            return
+        self._mark_preview_stale(refresh_context=False, refresh_hint=False)
+
+    def _load_original_into_table(self):
+        """Reload the currently selected original instructions into the table."""
         self.include_original.setChecked(False)
-        self.editor.setPlainText(self.original_asm_text)
+        set_patch_table_rows(self.patch_table, self._build_body_rows(self.original_asm_text, None))
+        self._mark_preview_stale()
         self.status.setText("已重新载入当前所选汇编。可直接修改顺序和内容。")
 
     def _on_text_changed(self):
-        """Drop stale preview state when editor options change."""
+        """Drop stale preview state when options change."""
+        self._mark_preview_stale(refresh_context=False)
+
+    def _mark_preview_stale(self, refresh_context=True, refresh_hint=True):
+        """Drop stale preview state when table or options change."""
         self.preview_plan = None
         self.preview_signature = None
         if self._current_text() or self.include_original.isChecked():
             if self._current_text() == self.original_asm_text and not self.include_original.isChecked():
-                self.status.setText("已载入当前所选汇编。可直接在编辑框中自由修改。")
+                self.status.setText("已载入当前所选汇编。Enter 插入 NOP 行，点击预览刷新。")
             else:
-                self.status.setText("编辑中。点击“预览代码注入”或直接“应用”。")
+                self.status.setText("编辑中。点击“预览代码注入”刷新机器码；Enter 插入 NOP 行。")
         else:
             self.status.setText("当前代码洞内容为空。")
-        self._queue_live_preview()
-        self._refresh_context_panel()
+        if refresh_context:
+            self._refresh_context_panel()
+        elif refresh_hint:
+            self._refresh_hint_panel()
 
-    def _on_live_preview_toggled(self):
-        """Enable or disable delayed preview updates."""
-        if self.live_preview.isChecked():
-            self._queue_live_preview()
-        else:
-            self.preview_timer.stop()
-
-    def _queue_live_preview(self):
-        """Schedule a delayed live preview refresh when live preview is enabled."""
-        if not self.live_preview.isChecked():
-            self.preview_timer.stop()
-            return
-        if not self._current_text() and not self.include_original.isChecked():
-            self.preview_timer.stop()
-            return
-        self.preview_timer.start()
-
-    def _run_live_preview(self):
-        """Trigger one delayed live preview refresh."""
-        self._preview_patch(live=True)
+    def _build_body_rows(self, text, preview_plan):
+        """Build editable body rows for the code-cave table."""
+        lines = [sanitize_asm_line(line) for line in text.splitlines()]
+        lines = [line for line in lines if line]
+        row_count = max(len(lines), 1)
+        rows = []
+        cave_infos = preview_plan.get("cave_infos") if preview_plan else []
+        cave_start = int(preview_plan.get("cave_start") or self.start_ea) if preview_plan else self.start_ea
+        current_ea = cave_start
+        for index in range(row_count):
+            entry = self.original_entries[index] if index < len(self.original_entries) else None
+            line = lines[index] if index < len(lines) else ""
+            info = cave_infos[index] if index < len(cave_infos or []) else None
+            if preview_plan:
+                address = current_ea
+                row_bytes = info.get("bytes") if info else b""
+                current_ea += len(row_bytes or b"")
+            elif entry:
+                address = int(entry.get("ea") or current_ea)
+                row_bytes = entry.get("bytes") or b""
+                current_ea = address + len(row_bytes)
+            else:
+                address = current_ea
+                row_bytes = b""
+            rows.append(
+                {
+                    "ea": address,
+                    "address": "0x%X" % address,
+                    "bytes": format_bytes_hex(row_bytes),
+                    "assembly": line or (entry.get("asm") if entry else "") or "",
+                    "highlight": index == 0,
+                }
+            )
+        return rows
 
     def _refresh_context_panel(self):
-        """Refresh the trampoline summary panel."""
+        """Refresh the editable table and right-side hint panel."""
         current_preview = self.preview_plan if self.preview_signature == self._current_signature() else None
+        set_patch_table_rows(
+            self.patch_table,
+            self._build_body_rows(self._current_text(), current_preview),
+        )
+        self._refresh_hint_panel(current_preview)
+
+    def _refresh_hint_panel(self, current_preview=None):
+        """Refresh only the right-side hint panel."""
+        if current_preview is None:
+            current_preview = self.preview_plan if self.preview_signature == self._current_signature() else None
         self.hint_panel.setPlainText(
             build_trampoline_hint_text(
                 self.original_entries,
@@ -283,7 +344,7 @@ class TrampolinePatchDialog:
             self.status.setText(
                 "%s成功: 入口 %d bytes | 代码洞 %d bytes"
                 % (
-                    "实时预览" if live else "预览",
+                    "自动预览" if live else "预览",
                     len(self.preview_plan["entry_bytes"]),
                     len(self.preview_plan["cave_bytes"]),
                 )
@@ -300,7 +361,7 @@ class TrampolinePatchDialog:
         except Exception as exc:
             self.preview_plan = None
             self.preview_signature = None
-            self.status.setText("%s失败: %s" % ("实时预览" if live else "预览", exc))
+            self.status.setText("%s失败: %s" % ("自动预览" if live else "预览", exc))
             debug_log_exception(
                 "trampoline_dialog.preview.failure",
                 exc,
@@ -315,7 +376,6 @@ class TrampolinePatchDialog:
     def _apply_patch(self):
         """Write the trampoline entry and cave code to the database."""
         try:
-            self.preview_timer.stop()
             debug_log(
                 "trampoline_dialog.apply.start",
                 trace_id=self.trace_id,

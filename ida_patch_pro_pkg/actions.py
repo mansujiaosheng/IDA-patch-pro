@@ -12,6 +12,7 @@ from .constants import (
     ACTION_SEARCH,
     ACTION_SHORTCUTS,
     ACTION_SHORTCUT_SPECS,
+    ACTION_STRING,
     ACTION_TRAMPOLINE,
     MAIN_MENU_LABEL,
     MAIN_MENU_NAME,
@@ -39,6 +40,7 @@ from .ui.fill_range_dialog import FillRangeDialog
 from .ui.rollback_dialog import RollbackHistoryDialog
 from .ui.search_dialog import AssemblySearchDialog
 from .ui.shortcut_dialog import ShortcutSettingsDialog
+from .ui.string_dialog import StringPatchDialog
 from .ui.trampoline_dialog import TrampolinePatchDialog
 
 
@@ -100,6 +102,21 @@ class TrampolineActionHandler(ida_kernwin.action_handler_t):
             TrampolinePatchDialog(ctx).exec()
         except Exception as exc:
             ida_kernwin.warning("打开代码注入窗口失败:\n%s" % exc)
+        return 1
+
+    def update(self, ctx):
+        if ctx.widget_type == ida_kernwin.BWN_DISASM:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_DISABLE_FOR_WIDGET
+
+
+class StringActionHandler(ida_kernwin.action_handler_t):
+    def activate(self, ctx):
+        try:
+            StringPatchDialog(ctx).exec()
+        except Exception as exc:
+            debug_log_exception("string_dialog.open.failure", exc)
+            ida_kernwin.warning("打开修改字符串窗口失败:\n%s" % exc)
         return 1
 
     def update(self, ctx):
@@ -254,6 +271,7 @@ class PopupHooks(ida_kernwin.UI_Hooks):
             POPUP_MENU_PATH,
             ida_kernwin.SETMENU_APP | ida_kernwin.SETMENU_ENSURE_SEP,
         )
+        ida_kernwin.attach_action_to_popup(widget, popup, ACTION_STRING, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_TRAMPOLINE, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_NOP, POPUP_MENU_PATH)
         ida_kernwin.attach_action_to_popup(widget, popup, ACTION_FILL_RANGE, POPUP_MENU_PATH)
@@ -290,6 +308,16 @@ def register_actions():
             TrampolineActionHandler(),
             shortcut_or_none(shortcuts.get(ACTION_TRAMPOLINE)),
             "创建代码洞并写入跳板补丁",
+        )
+    )
+
+    ida_kernwin.register_action(
+        ida_kernwin.action_desc_t(
+            ACTION_STRING,
+            "修改字符串",
+            StringActionHandler(),
+            shortcut_or_none(shortcuts.get(ACTION_STRING)),
+            "把文本编码成数据字节写入，并可定义为字符串",
         )
     )
 
